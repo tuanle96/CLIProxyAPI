@@ -5,14 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "embed"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-const managementAssetName = "management.html"
 const usageAnalyticsExtensionName = "usage-analytics-extension.js"
+const (
+	defaultManagementReleaseURL  = "https://api.github.com/repos/tuanle96/Cli-Proxy-API-Management-Center/releases/latest"
+	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
+	managementAssetName          = "management.html"
+	httpUserAgent                = "CLIProxyAPI-management-updater"
+	managementSyncMinInterval    = 30 * time.Second
+	updateCheckInterval          = 3 * time.Hour
+	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
+)
 
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
