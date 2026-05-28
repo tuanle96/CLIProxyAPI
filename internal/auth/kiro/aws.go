@@ -88,6 +88,8 @@ type KiroModel struct {
 	RateUnit string `json:"rateUnit"`
 	// MaxInputTokens is the maximum input token limit
 	MaxInputTokens int `json:"maxInputTokens,omitempty"`
+	// MaxOutputTokens is the maximum output (completion) token limit
+	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
 }
 
 // KiroIDETokenFile is the default path to Kiro IDE's token file

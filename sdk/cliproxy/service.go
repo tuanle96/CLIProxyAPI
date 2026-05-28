@@ -1168,6 +1168,11 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	case "kiro":
 		models = registry.GetKiroModels()
 		models = applyExcludedModels(models, excluded)
+		// Schedule an asynchronous fetch of the live Kiro ListAvailableModels
+		// list so that newly-released models surface in /v1/models without
+		// requiring a static catalog update. The static list above keeps the
+		// registry populated immediately even if the upstream call fails.
+		s.refreshKiroDynamicModels(a, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
