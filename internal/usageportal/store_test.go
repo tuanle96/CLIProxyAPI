@@ -556,3 +556,53 @@ func TestEstimateCostUSDDeepseekV4ProMatchesObservedRequest(t *testing.T) {
 		t.Fatalf("estimated cost = %.6f; want roughly $0.0034 for V4 Pro mostly-cached request", cost)
 	}
 }
+
+
+func TestStoreSnapshotStripsUpstreamAccountFromRecentRequests(t *testing.T) {
+	store := newStore()
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.Local)
+	ctx := internallogging.WithEndpoint(context.Background(), "/v1/responses")
+
+	upstreamKey := "sk-c09dcd368f114992ba6eb19a2b89fdc3"
+	store.HandleUsage(ctx, coreusage.Record{
+		Provider:    "deepseek",
+		Model:       "deepseek-v4-pro",
+		APIKey:      "sk-end-user-proxy-key-abcd",
+		Source:      upstreamKey,
+		AuthIndex:   "deepseek-1",
+		AuthType:    "apikey",
+		RequestedAt: now,
+		Detail:      coreusage.Detail{TotalTokens: 100},
+	})
+
+	snapshot := store.Snapshot("sk-end-user-proxy-key-abcd", 7, true, now)
+	if len(snapshot.RecentRequests) != 1 {
+		t.Fatalf("recent requests = %d, want 1", len(snapshot.RecentRequests))
+	}
+	recent := snapshot.RecentRequests[0]
+
+	// Upstream-identifying fields must be stripped from end-user snapshots.
+	if recent.AccountLabel != "" {
+		t.Errorf("account_label should be stripped, got %q", recent.AccountLabel)
+	}
+	if recent.Source != "" {
+		t.Errorf("source should be stripped, got %q", recent.Source)
+	}
+	if recent.APIKeyLabel != "" {
+		t.Errorf("api_key_label should be stripped, got %q", recent.APIKeyLabel)
+	}
+	if recent.AuthIndex != "" {
+		t.Errorf("auth_index should be stripped, got %q", recent.AuthIndex)
+	}
+
+	// Request-level fields belonging to the end user must remain.
+	if recent.Provider != "deepseek" {
+		t.Errorf("provider = %q, want deepseek", recent.Provider)
+	}
+	if recent.Endpoint != "/v1/responses" {
+		t.Errorf("endpoint = %q, want /v1/responses", recent.Endpoint)
+	}
+	if recent.TotalTokens != 100 {
+		t.Errorf("total_tokens = %d, want 100", recent.TotalTokens)
+	}
+}

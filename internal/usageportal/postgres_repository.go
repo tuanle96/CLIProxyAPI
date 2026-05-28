@@ -428,7 +428,7 @@ func (r *PostgresRepository) SnapshotForKey(ctx context.Context, apiKeyHash stri
 		}
 	}
 	for i := len(events) - 1; i >= 0 && len(out.RecentRequests) < maxRecentRequests; i-- {
-		out.RecentRequests = append(out.RecentRequests, events[i].Request)
+		out.RecentRequests = append(out.RecentRequests, sanitizeRequestForEndUser(events[i].Request))
 	}
 	return out, nil
 }

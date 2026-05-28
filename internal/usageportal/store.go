@@ -672,7 +672,7 @@ func (s *Store) Snapshot(apiKey string, windowDays int, active bool, now time.Ti
 		if request.Time.Before(start.UTC()) {
 			continue
 		}
-		out.RecentRequests = append(out.RecentRequests, request)
+		out.RecentRequests = append(out.RecentRequests, sanitizeRequestForEndUser(request))
 	}
 	return out
 }
@@ -1836,6 +1836,75 @@ func MaskAPIKey(apiKey string) string {
 		return "****"
 	}
 	return apiKey[:6] + "..." + apiKey[len(apiKey)-4:]
+}
+
+// looksLikeAPIKey returns true when the value resembles a raw provider API key
+// that must not be exposed to end users via the usage portal. It conservatively
+// matches common prefixes (sk-, sk_, pk-, gsk_, xai-, anthropic-, OAuth bearer
+// tokens etc.) and any sufficiently long, single-token, secret-shaped value.
+func looksLikeAPIKey(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return false
+	}
+	// Anything containing whitespace or '@' (emails) is not a raw key.
+	if strings.ContainsAny(v, " \t@") {
+		return false
+	}
+	lower := strings.ToLower(v)
+	prefixes := []string{
+		"sk-", "sk_", "pk-", "pk_",
+		"gsk_", "xai-", "anthropic-",
+		"hf_", "ghp_", "ghu_", "gho_",
+		"ya29.", "aip-", "claude-",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) && len(v) >= 16 {
+			return true
+		}
+	}
+	// Long opaque secret-like token without separators.
+	if len(v) >= 24 && !strings.ContainsAny(v, "/:") {
+		// Heuristic: high ratio of [A-Za-z0-9_\-] suggests a token.
+		alnum := 0
+		for _, r := range v {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+				alnum++
+			}
+		}
+		if alnum*4 >= len(v)*3 { // >=75% token-shaped
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeRequestForEndUser strips upstream-account identifiers from a
+// RecentRequest before it is returned via the public end-user usage portal
+// (GET /usage/:api_key/data). Upstream account labels, sources, raw API keys
+// and auth indices identify the operator's backend credentials and must not be
+// leaked to tenants. Only request-level fields the end user owns (model,
+// endpoint, tokens, cost, latency, status, request_id) remain.
+func sanitizeRequestForEndUser(request RecentRequest) RecentRequest {
+	request.Source = ""
+	request.AccountLabel = ""
+	request.APIKeyLabel = ""
+	request.APIKeyName = ""
+	request.APIKeyFingerprint = ""
+	request.APIKeyDisplayLabel = ""
+	request.AuthIndex = ""
+	return request
+}
+
+func sanitizeRequestsForEndUser(requests []RecentRequest) []RecentRequest {
+	if len(requests) == 0 {
+		return requests
+	}
+	out := make([]RecentRequest, len(requests))
+	for i, r := range requests {
+		out[i] = sanitizeRequestForEndUser(r)
+	}
+	return out
 }
 
 func (f *RequestDetailsFilter) normalize() {

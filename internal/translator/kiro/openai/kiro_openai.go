@@ -120,12 +120,21 @@ func ConvertKiroStreamToOpenAI(ctx context.Context, model string, originalReques
 				results = append(results, []byte(chunk))
 			}
 		case "input_json_delta":
-			// Tool call arguments delta
+			// Tool call arguments delta. Use the most-recently-opened tool's
+			// index (state.ToolCallIndex was incremented when its block_start
+			// fired, so state.ToolCallIndex-1 is its slot). Previously we used
+			// `blockIndex-1` which only worked when exactly one non-tool block
+			// (a text or thinking block) preceded the first tool. With
+			// thinking + text + tools (Kiro Claude Sonnet emits both) the
+			// math drifted by one and the first tool's arguments landed on
+			// the *next* tool's slot — Codex Desktop then accumulated empty
+			// arguments for every assistant tool_call in history and tried to
+			// re-call exec_command with an empty body, looping forever on
+			// "failed to parse function arguments: missing field `cmd`".
 			partialJSON := eventJSON.Get("delta.partial_json").String()
-			if partialJSON != "" {
-				// Get the tool index from content block index
-				blockIndex := int(eventJSON.Get("index").Int())
-				chunk := BuildOpenAISSEToolCallArgumentsDelta(state, partialJSON, blockIndex-1) // Adjust for 0-based tool index
+			if partialJSON != "" && state.ToolCallIndex > 0 {
+				toolIndex := state.ToolCallIndex - 1
+				chunk := BuildOpenAISSEToolCallArgumentsDelta(state, partialJSON, toolIndex)
 				results = append(results, []byte(chunk))
 			}
 		}

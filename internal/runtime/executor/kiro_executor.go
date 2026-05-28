@@ -722,6 +722,9 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 		// Each endpoint requires its matching Origin value in the request body
 		kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
 
+		// TEMP-DEBUG-KIRO-PAYLOAD
+		log.Infof("TEMP-DEBUG-KIRO-PAYLOAD: source=%s len=%d body=%s", from.String(), len(kiroPayload), string(kiroPayload))
+
 		log.Debugf("kiro: trying endpoint %d/%d: %s (Name: %s, Origin: %s)",
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
 

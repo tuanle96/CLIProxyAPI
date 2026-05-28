@@ -390,8 +390,15 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 				}
 			}
 		}
-		if _, value := auth.AccountInfo(); value != "" {
-			return strings.TrimSpace(value)
+		if kind, value := auth.AccountInfo(); strings.TrimSpace(value) != "" {
+			value = strings.TrimSpace(value)
+			// Never expose raw upstream API keys as the usage "Source"/"AccountLabel".
+			// They surface in the end-user usage portal (/usage/:api_key/data) and
+			// must not be leaked across tenants. See README/security notes.
+			if strings.EqualFold(strings.TrimSpace(kind), "api_key") {
+				return util.HideAPIKey(value)
+			}
+			return value
 		}
 		if auth.Metadata != nil {
 			if email, ok := auth.Metadata["email"].(string); ok {
@@ -402,12 +409,12 @@ func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
 		}
 		if auth.Attributes != nil {
 			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-				return key
+				return util.HideAPIKey(key)
 			}
 		}
 	}
 	if trimmed := strings.TrimSpace(ctxAPIKey); trimmed != "" {
-		return trimmed
+		return util.HideAPIKey(trimmed)
 	}
 	return ""
 }
