@@ -51,6 +51,43 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// CompactFallback rewrites the model field for /v1/responses/compact requests when
+	// the requested model is served by a provider that does not natively support the
+	// Codex /responses/compact endpoint (e.g. third-party openai-compatibility upstreams
+	// like opencode.ai which only expose /chat/completions). When enabled, the proxy
+	// substitutes the configured Codex-capable model (e.g. "gpt-5.5") so the request is
+	// routed through the Codex executor that hits chatgpt.com/backend-api/codex.
+	//
+	// Example:
+	//   compact-fallback:
+	//     enabled: true
+	//     model: "gpt-5.5"
+	//     applies-to-providers: ["openai-compatibility"]
+	CompactFallback CompactFallbackConfig `yaml:"compact-fallback,omitempty" json:"compact-fallback,omitempty"`
+}
+
+// CompactFallbackConfig configures model substitution for /v1/responses/compact
+// requests when the originating model's provider cannot serve the Codex compact
+// endpoint. The substitution is purely an upstream-routing rewrite: response data
+// is still returned to the caller verbatim. The fallback is skipped when no Codex
+// auth is registered for the substitute model so callers never see a routing error
+// they cannot remediate themselves.
+type CompactFallbackConfig struct {
+	// Enabled toggles the compact fallback behavior. Default false.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Model is the substitute model name used when fallback fires (e.g. "gpt-5.5").
+	// Must resolve to a registered Codex provider model at runtime.
+	Model string `yaml:"model" json:"model"`
+
+	// AppliesToProviders is the whitelist of provider identifiers (as returned by
+	// util.GetProviderName) that trigger the fallback. The whitelist matches by
+	// exact provider identifier; the special token "*" or an empty list matches
+	// every non-codex provider so custom OpenAI-compat names (e.g. "opencode-go",
+	// "9router") are covered without forcing the operator to enumerate each one.
+	// Codex-native models always bypass the fallback regardless of this setting.
+	AppliesToProviders []string `yaml:"applies-to-providers,omitempty" json:"applies-to-providers,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.
