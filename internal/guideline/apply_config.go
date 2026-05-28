@@ -30,6 +30,6 @@ func ApplyFromConfig(format string, body []byte, cfg *config.SDKConfig) []byte {
 		content = DefaultAgentHarnessKitGuideline
 	}
 	out := Inject(format, body, content, gi.EffectivePosition())
-	log.Debugf("guideline-injected format=%s in_len=%d out_len=%d position=%s", format, len(body), len(out), gi.EffectivePosition())
+	log.Debugf("guideline-injected format=%s in_len=%d out_len=%d position=%s delta=%d", format, len(body), len(out), gi.EffectivePosition(), len(out)-len(body))
 	return out
 }
