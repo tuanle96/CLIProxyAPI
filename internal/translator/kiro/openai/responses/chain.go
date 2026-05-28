@@ -13,6 +13,7 @@ import (
 
 	kiroopenai "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/openai"
 	openairesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
+	"github.com/tidwall/gjson"
 )
 
 // chainStreamState keeps the per-stage stream state that each chained
@@ -64,6 +65,16 @@ func streamState(param *any) *chainStreamState {
 // chunk that triggered the second hop — see the explicit type-assertion
 // failure surfaced as "interface conversion: interface {} is
 // *openai.OpenAIStreamState, not *responses.oaiToResponsesState".
+//
+// The kiro-openai converter intentionally never emits a `[DONE]` marker
+// (the /v1/chat/completions handler appends one when the upstream channel
+// closes). The openai-responses converter, however, only emits the terminal
+// `response.completed` event when it sees `[DONE]`. Without the marker,
+// /v1/responses clients (Codex Desktop, Antigravity) keep retrying with
+// "stream disconnected before completion: stream closed before
+// response.completed". So when this hop sees a Chat Completions chunk that
+// already carries a non-empty `finish_reason`, we synthesise the missing
+// `[DONE]` and feed it through the response framer so it can finalise.
 func ConvertKiroStreamToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	st := streamState(param)
 
@@ -72,15 +83,56 @@ func ConvertKiroStreamToOpenAIResponses(ctx context.Context, modelName string, o
 		return nil
 	}
 
-	out := make([][]byte, 0, len(chatChunks)*2)
+	out := make([][]byte, 0, len(chatChunks)*2+1)
+	sawFinish := false
 	for _, chunk := range chatChunks {
 		if len(chunk) == 0 {
 			continue
 		}
 		events := openairesponses.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, chunk, &st.responseParam)
 		out = append(out, events...)
+
+		if !sawFinish && chunkHasFinishReason(chunk) {
+			sawFinish = true
+		}
 	}
+
+	if sawFinish {
+		// Push the synthetic [DONE] through the framer so it can flush the
+		// pending output_text.done / response.completed envelope. We do this
+		// once per stream — the response stage is idempotent against repeated
+		// [DONE] but we don't need to spam it.
+		doneEvents := openairesponses.ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx, modelName, originalRequestRawJSON, requestRawJSON, []byte("[DONE]"), &st.responseParam)
+		out = append(out, doneEvents...)
+	}
+
 	return out
+}
+
+// chunkHasFinishReason returns true when a Chat Completions stream chunk
+// carries a non-empty `choices[].finish_reason`. Only those chunks signal the
+// model is done generating in the Kiro→OpenAI converter; intermediate delta
+// chunks have an empty `finish_reason`.
+func chunkHasFinishReason(chunk []byte) bool {
+	// Strip optional `data:` SSE prefix and any whitespace before parsing.
+	body := chunk
+	if len(body) > 5 && body[0] == 'd' && body[1] == 'a' && body[2] == 't' && body[3] == 'a' && body[4] == ':' {
+		body = body[5:]
+		for len(body) > 0 && (body[0] == ' ' || body[0] == '\t') {
+			body = body[1:]
+		}
+	}
+	if len(body) == 0 {
+		return false
+	}
+
+	results := gjson.GetManyBytes(body, "choices.0.finish_reason", "choices.1.finish_reason")
+	for _, r := range results {
+		if r.Exists() && r.Type == gjson.String && r.String() != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ConvertKiroNonStreamToOpenAIResponses chains the two non-stream converters.
