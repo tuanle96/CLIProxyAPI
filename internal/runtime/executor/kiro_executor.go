@@ -27,6 +27,7 @@ import (
 	kiroclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/claude"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/common"
 	kiroopenai "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/openai"
+	openairesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -476,6 +477,15 @@ func buildKiroPayloadForFormat(body []byte, modelID, profileArn, origin string, 
 	case "openai":
 		log.Debugf("kiro: using OpenAI payload builder for source format: %s", sourceFormat.String())
 		return kiroopenai.BuildKiroPayloadFromOpenAI(body, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
+	case "openai-response":
+		// /v1/responses payloads (Codex Desktop, Antigravity, etc.). Convert
+		// the Responses-shaped body into the Chat Completions shape using the
+		// canonical openai-responses converter, then hand the result to the
+		// Kiro/OpenAI payload builder so we go through exactly one normalisation
+		// pass instead of double-wrapping in Claude format.
+		log.Debugf("kiro: using OpenAI Responses payload builder (chain: Responses → ChatCompletions → Kiro) for source format: %s", sourceFormat.String())
+		chat := openairesponses.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelID, body, true)
+		return kiroopenai.BuildKiroPayloadFromOpenAI(chat, modelID, profileArn, origin, isAgentic, isChatOnly, headers, nil)
 	case "kiro":
 		// Body is already in Kiro format — pass through directly
 		log.Debugf("kiro: body already in Kiro format, passing through directly")
