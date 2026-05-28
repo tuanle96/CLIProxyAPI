@@ -172,3 +172,343 @@ func TestOpenAIResponsesCompactDecodesZstdRequestBody(t *testing.T) {
 		t.Fatalf("body = %s", resp.Body.String())
 	}
 }
+
+
+// providerCaptureExecutor is a compact-aware test executor that records the
+// model field, the alt routing key, and the count of executions, scoped to a
+// single provider identifier. Two instances (one per provider) let tests
+// assert which provider received a compact request after the optional
+// CompactFallback model swap.
+type providerCaptureExecutor struct {
+	provider string
+	model    string
+	alt      string
+	calls    int
+}
+
+func (e *providerCaptureExecutor) Identifier() string { return e.provider }
+
+func (e *providerCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls++
+	e.model = req.Model
+	e.alt = opts.Alt
+	return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+}
+
+func (e *providerCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *providerCaptureExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *providerCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *providerCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+// TestCompactFallbackAppliedForOpenAICompat verifies that when an
+// openai-compatibility model is requested for compact and a Codex auth is
+// available for the configured fallback model, the proxy rewrites the model
+// field and routes the request through the Codex provider.
+func TestCompactFallbackAppliedForOpenAICompat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openaiCompat := &providerCaptureExecutor{provider: "openai-compatibility"}
+	codex := &providerCaptureExecutor{provider: "codex"}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(openaiCompat)
+	manager.RegisterExecutor(codex)
+
+	openaiAuth := &coreauth.Auth{ID: "openai-auth", Provider: openaiCompat.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), openaiAuth); err != nil {
+		t.Fatalf("Register openai auth: %v", err)
+	}
+	codexAuth := &coreauth.Auth{ID: "codex-auth", Provider: codex.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), codexAuth); err != nil {
+		t.Fatalf("Register codex auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(openaiAuth.ID, openaiAuth.Provider, []*registry.ModelInfo{{ID: "deepseek-v4-pro"}})
+	registry.GetGlobalRegistry().RegisterClient(codexAuth.ID, codexAuth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(openaiAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(codexAuth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.CompactFallback.Enabled = true
+	cfg.CompactFallback.Model = "gpt-5.5"
+	cfg.CompactFallback.AppliesToProviders = []string{"openai-compatibility"}
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"deepseek-v4-pro","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if openaiCompat.calls != 0 {
+		t.Fatalf("openai-compatibility executor calls = %d, want 0 (fallback should bypass it)", openaiCompat.calls)
+	}
+	if codex.calls != 1 {
+		t.Fatalf("codex executor calls = %d, want 1", codex.calls)
+	}
+	if codex.model != "gpt-5.5" {
+		t.Fatalf("codex received model = %q, want %q", codex.model, "gpt-5.5")
+	}
+	if codex.alt != "responses/compact" {
+		t.Fatalf("codex received alt = %q, want %q", codex.alt, "responses/compact")
+	}
+}
+
+// TestCompactFallbackSkippedWhenNoCodexAuth verifies that when no Codex auth
+// is registered, the fallback is silently skipped and the request continues
+// to the original openai-compatibility provider so operators see the real
+// upstream error rather than a misleading proxy-rewritten failure.
+func TestCompactFallbackSkippedWhenNoCodexAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openaiCompat := &providerCaptureExecutor{provider: "openai-compatibility"}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(openaiCompat)
+
+	openaiAuth := &coreauth.Auth{ID: "openai-auth-2", Provider: openaiCompat.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), openaiAuth); err != nil {
+		t.Fatalf("Register openai auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(openaiAuth.ID, openaiAuth.Provider, []*registry.ModelInfo{{ID: "deepseek-v4-pro"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(openaiAuth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.CompactFallback.Enabled = true
+	cfg.CompactFallback.Model = "gpt-5.5" // no codex auth registered for this model
+	cfg.CompactFallback.AppliesToProviders = []string{"openai-compatibility"}
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"deepseek-v4-pro","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if openaiCompat.calls != 1 {
+		t.Fatalf("openai-compatibility executor calls = %d, want 1 (fallback should be skipped)", openaiCompat.calls)
+	}
+	if openaiCompat.model != "deepseek-v4-pro" {
+		t.Fatalf("openai-compat received model = %q, want %q (no rewrite)", openaiCompat.model, "deepseek-v4-pro")
+	}
+}
+
+// TestCompactFallbackPreservesCodexNativeModel verifies that when the
+// requested model is already served by a Codex provider, the fallback does
+// not rewrite the model — Codex models compact natively and replacing them
+// would silently drop the user's chosen model.
+func TestCompactFallbackPreservesCodexNativeModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	codex := &providerCaptureExecutor{provider: "codex"}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(codex)
+
+	codexAuth := &coreauth.Auth{ID: "codex-auth-3", Provider: codex.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), codexAuth); err != nil {
+		t.Fatalf("Register codex auth: %v", err)
+	}
+	// Register both the original conversation model and the configured fallback
+	// model under the same Codex provider so the fallback model is reachable but
+	// the original is also Codex-native and should NOT be rewritten.
+	registry.GetGlobalRegistry().RegisterClient(codexAuth.ID, codexAuth.Provider, []*registry.ModelInfo{
+		{ID: "gpt-5-codex"},
+		{ID: "gpt-5.5"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(codexAuth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.CompactFallback.Enabled = true
+	cfg.CompactFallback.Model = "gpt-5.5"
+	cfg.CompactFallback.AppliesToProviders = []string{"openai-compatibility"}
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"gpt-5-codex","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if codex.calls != 1 {
+		t.Fatalf("codex executor calls = %d, want 1", codex.calls)
+	}
+	if codex.model != "gpt-5-codex" {
+		t.Fatalf("codex received model = %q, want %q (must not rewrite codex-native models)", codex.model, "gpt-5-codex")
+	}
+}
+
+
+// TestCompactFallbackWildcardMatchesCustomCompatName verifies that real-world
+// OpenAI-compat configs (where compat.Name becomes the registered provider
+// identifier — e.g. "opencode-go") trigger the fallback when the operator uses
+// the wildcard "*" or an empty AppliesToProviders. This is the case that
+// motivated the feature: deepseek-v4-pro is registered under provider
+// "opencode-go" rather than the canonical "openai-compatibility" alias.
+func TestCompactFallbackWildcardMatchesCustomCompatName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	customCompat := &providerCaptureExecutor{provider: "opencode-go"}
+	codex := &providerCaptureExecutor{provider: "codex"}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(customCompat)
+	manager.RegisterExecutor(codex)
+
+	customAuth := &coreauth.Auth{ID: "opencode-auth", Provider: customCompat.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), customAuth); err != nil {
+		t.Fatalf("Register opencode auth: %v", err)
+	}
+	codexAuth := &coreauth.Auth{ID: "codex-auth-wild", Provider: codex.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), codexAuth); err != nil {
+		t.Fatalf("Register codex auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(customAuth.ID, customAuth.Provider, []*registry.ModelInfo{{ID: "deepseek-v4-pro"}})
+	registry.GetGlobalRegistry().RegisterClient(codexAuth.ID, codexAuth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(customAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(codexAuth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.CompactFallback.Enabled = true
+	cfg.CompactFallback.Model = "gpt-5.5"
+	cfg.CompactFallback.AppliesToProviders = []string{"*"} // wildcard: every non-codex provider
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"deepseek-v4-pro","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if customCompat.calls != 0 {
+		t.Fatalf("opencode-go executor calls = %d, want 0 (wildcard fallback should bypass it)", customCompat.calls)
+	}
+	if codex.calls != 1 {
+		t.Fatalf("codex executor calls = %d, want 1", codex.calls)
+	}
+	if codex.model != "gpt-5.5" {
+		t.Fatalf("codex received model = %q, want %q", codex.model, "gpt-5.5")
+	}
+}
+
+
+// TestCompactFallbackStripsReasoningItems verifies that when the fallback
+// fires the helper removes any "type":"reasoning" entries from the input
+// array before forwarding to Codex. Cross-provider reasoning blocks carry
+// signatures Codex cannot verify and would be rejected with
+// thinking_signature_invalid; dropping them makes the compact request
+// portable while preserving conversation messages.
+func TestCompactFallbackStripsReasoningItems(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	customCompat := &providerCaptureExecutor{provider: "opencode-go"}
+	codex := &payloadCaptureExecutor{providerCaptureExecutor: providerCaptureExecutor{provider: "codex"}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(customCompat)
+	manager.RegisterExecutor(codex)
+
+	customAuth := &coreauth.Auth{ID: "opencode-strip", Provider: customCompat.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), customAuth); err != nil {
+		t.Fatalf("Register opencode auth: %v", err)
+	}
+	codexAuth := &coreauth.Auth{ID: "codex-strip", Provider: codex.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), codexAuth); err != nil {
+		t.Fatalf("Register codex auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(customAuth.ID, customAuth.Provider, []*registry.ModelInfo{{ID: "deepseek-v4-pro"}})
+	registry.GetGlobalRegistry().RegisterClient(codexAuth.ID, codexAuth.Provider, []*registry.ModelInfo{{ID: "gpt-5.5"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(customAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(codexAuth.ID)
+	})
+
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.CompactFallback.Enabled = true
+	cfg.CompactFallback.Model = "gpt-5.5"
+	cfg.CompactFallback.AppliesToProviders = []string{"*"}
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/responses/compact", h.Compact)
+
+	// Mixed input: a user message, a reasoning block (provider-private), an
+	// assistant message, and another reasoning block. Both reasoning items
+	// should be stripped; the two messages should remain in their original
+	// order.
+	body := `{"model":"deepseek-v4-pro","input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},` +
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking..."}],"encrypted_content":"OPAQUE_FROM_DEEPSEEK_1"},` +
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]},` +
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"more thinking"}],"encrypted_content":"OPAQUE_FROM_DEEPSEEK_2"}` +
+		`]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if codex.calls != 1 {
+		t.Fatalf("codex executor calls = %d, want 1", codex.calls)
+	}
+	if codex.model != "gpt-5.5" {
+		t.Fatalf("codex received model = %q, want %q", codex.model, "gpt-5.5")
+	}
+	// Verify input array no longer contains reasoning items.
+	if reasoningCount := strings.Count(string(codex.payload), `"type":"reasoning"`); reasoningCount != 0 {
+		t.Fatalf("forwarded payload still contains %d reasoning item(s); payload=%s", reasoningCount, string(codex.payload))
+	}
+	// Sanity-check that the two messages survived intact.
+	if !strings.Contains(string(codex.payload), `"hello"`) || !strings.Contains(string(codex.payload), `"hi"`) {
+		t.Fatalf("forwarded payload missing message content; payload=%s", string(codex.payload))
+	}
+	if strings.Contains(string(codex.payload), "OPAQUE_FROM_DEEPSEEK") {
+		t.Fatalf("forwarded payload still contains foreign-provider encrypted_content; payload=%s", string(codex.payload))
+	}
+}
+
+// payloadCaptureExecutor is a providerCaptureExecutor variant that also
+// stores the request payload bytes so tests can assert on the exact JSON
+// forwarded upstream (e.g. to verify provider-private fields were stripped).
+type payloadCaptureExecutor struct {
+	providerCaptureExecutor
+	payload []byte
+}
+
+func (e *payloadCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls++
+	e.model = req.Model
+	e.alt = opts.Alt
+	e.payload = append(e.payload[:0], req.Payload...)
+	return coreexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+}

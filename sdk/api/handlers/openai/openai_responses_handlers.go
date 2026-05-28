@@ -19,7 +19,9 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -422,6 +424,10 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 
 	c.Header("Content-Type", "application/json")
 	modelName := gjson.GetBytes(rawJSON, "model").String()
+	if rewritten, newModel, applied := applyCompactModelFallback(h, modelName, rawJSON); applied {
+		rawJSON = rewritten
+		modelName = newModel
+	}
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
@@ -434,6 +440,183 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+// applyCompactModelFallback rewrites the request payload model field when the
+// configured CompactFallback is enabled and the requested model resolves to a
+// provider that does not natively support /responses/compact (e.g. third-party
+// openai-compatibility upstreams that only expose /chat/completions).
+//
+// The fallback is only applied when:
+//   - h.Cfg.CompactFallback.Enabled is true
+//   - h.Cfg.CompactFallback.Model is non-empty
+//   - The requested model resolves to a provider that satisfies the whitelist
+//     in AppliesToProviders. The whitelist matches by exact provider identifier;
+//     the special token "*" or an empty list matches any non-codex provider so
+//     custom OpenAI-compat names (e.g. "opencode-go", "9router") are covered
+//     without forcing the operator to enumerate every entry.
+//   - The fallback model itself resolves to a "codex" provider that is currently
+//     registered in the global model registry (i.e. there is at least one Codex
+//     auth that can serve it)
+//
+// When applied, the returned bool is true and the payload's model field is
+// replaced in place with the configured fallback model. When skipped, the
+// original payload is returned unchanged with applied=false. Errors during the
+// rewrite are non-fatal: the original payload is preserved and a warning is
+// logged so the caller still gets the upstream's native error rather than a
+// proxy-side failure.
+func applyCompactModelFallback(h *OpenAIResponsesAPIHandler, modelName string, rawJSON []byte) (rewritten []byte, newModel string, applied bool) {
+	if h == nil || h.Cfg == nil {
+		return rawJSON, modelName, false
+	}
+	cfg := h.Cfg.CompactFallback
+	if !cfg.Enabled {
+		return rawJSON, modelName, false
+	}
+	fallbackModel := cfg.Model
+	if fallbackModel == "" || modelName == "" {
+		return rawJSON, modelName, false
+	}
+	if fallbackModel == modelName {
+		// Already using the fallback model; nothing to do.
+		return rawJSON, modelName, false
+	}
+
+	originalProviders := util.GetProviderName(modelName)
+	if len(originalProviders) == 0 {
+		return rawJSON, modelName, false
+	}
+
+	// Skip if the original model is already served by a Codex provider — the
+	// native compact path will work without rewriting.
+	if util.InArray(originalProviders, "codex") {
+		return rawJSON, modelName, false
+	}
+
+	// Decide whether the original providers match the configured whitelist.
+	// Empty list or the wildcard "*" means "every non-codex provider", which
+	// is the typical operator intent (compact should fall back for any
+	// non-Codex upstream that doesn't expose /responses/compact natively).
+	if !compactProvidersMatch(originalProviders, cfg.AppliesToProviders) {
+		return rawJSON, modelName, false
+	}
+
+	// Confirm the fallback model is reachable through a Codex provider in the
+	// running registry. If no Codex auth is loaded we deliberately leave the
+	// payload untouched so the operator sees the original 404 and can fix
+	// their auth setup, rather than masking the misconfiguration.
+	fallbackProviders := util.GetProviderName(fallbackModel)
+	if !util.InArray(fallbackProviders, "codex") {
+		log.Warnf("compact fallback skipped: fallback model %q has no codex provider registered (resolved providers=%v)", fallbackModel, fallbackProviders)
+		return rawJSON, modelName, false
+	}
+
+	updated, err := sjson.SetBytes(rawJSON, "model", fallbackModel)
+	if err != nil {
+		log.Warnf("compact fallback skipped: failed to rewrite model field: %v", err)
+		return rawJSON, modelName, false
+	}
+	// Strip provider-specific reasoning items from the input array. The
+	// originating provider (e.g. opencode.ai) signs/encodes its reasoning
+	// blocks with its own keys; forwarding them to Codex causes a
+	// thinking_signature_invalid 400 because chatgpt.com cannot verify
+	// signatures it did not produce. Compact is a summarization endpoint —
+	// dropping prior reasoning items only loses provider-private state, the
+	// conversation messages remain intact for the model to summarize.
+	if stripped, removed := stripReasoningItems(updated); removed > 0 {
+		log.Infof("compact fallback: stripped %d reasoning item(s) before forwarding to %s", removed, fallbackModel)
+		updated = stripped
+	}
+	log.Infof("compact fallback applied: %s -> %s (matched providers=%v)", modelName, fallbackModel, originalProviders)
+	return updated, fallbackModel, true
+}
+
+// stripReasoningItems removes every element from the top-level "input" array
+// whose "type" is "reasoning". It returns the modified payload and the count
+// of removed items. When "input" is missing or not an array the original
+// payload is returned unchanged with removed=0.
+//
+// The caller uses this to sanitize a payload that originated from a different
+// provider before forwarding it to a Codex compact endpoint. Codex rejects
+// reasoning blocks signed by other providers with a thinking_signature_invalid
+// error, so they must be dropped rather than passed through.
+func stripReasoningItems(rawJSON []byte) ([]byte, int) {
+	input := gjson.GetBytes(rawJSON, "input")
+	if !input.IsArray() {
+		return rawJSON, 0
+	}
+	// Collect indices of reasoning items in reverse order so successive
+	// deletions remain stable. sjson uses array indices in its path syntax.
+	items := input.Array()
+	indices := make([]int, 0, len(items))
+	for i, item := range items {
+		if item.Get("type").String() == "reasoning" {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 {
+		return rawJSON, 0
+	}
+	out := rawJSON
+	for i := len(indices) - 1; i >= 0; i-- {
+		path := fmt.Sprintf("input.%d", indices[i])
+		next, err := sjson.DeleteBytes(out, path)
+		if err != nil {
+			// Abort partial deletion: returning the partially-edited payload
+			// would corrupt the array indices. Fall back to the unmodified
+			// payload and let the caller log/handle the upstream error.
+			return rawJSON, 0
+		}
+		out = next
+	}
+	return out, len(indices)
+}
+
+// compactProvidersMatch reports whether the given provider identifiers satisfy
+// the configured AppliesToProviders whitelist.
+//
+// Semantics:
+//   - Empty whitelist: match (default permissive — covers any non-codex provider,
+//     since the codex skip happens earlier in the caller).
+//   - Whitelist contains "*": match (explicit wildcard).
+//   - Otherwise: case-sensitive exact-name intersection between providers and
+//     the whitelist. This deliberately matches the canonical lowercase names
+//     used elsewhere in the codebase (e.g. "openai-compatibility", "opencode-go").
+func compactProvidersMatch(providers, whitelist []string) bool {
+	if len(providers) == 0 {
+		return false
+	}
+	if len(whitelist) == 0 {
+		return true
+	}
+	for _, name := range whitelist {
+		if name == "*" {
+			return true
+		}
+	}
+	return providerSetIntersects(providers, whitelist)
+}
+
+// providerSetIntersects reports whether any element of providers appears in
+// the whitelist. Comparison is case-sensitive: provider identifiers in this
+// codebase are canonical lowercase strings (e.g. "codex", "openai-compatibility").
+func providerSetIntersects(providers, whitelist []string) bool {
+	if len(providers) == 0 || len(whitelist) == 0 {
+		return false
+	}
+	wl := make(map[string]struct{}, len(whitelist))
+	for _, name := range whitelist {
+		if name == "" {
+			continue
+		}
+		wl[name] = struct{}{}
+	}
+	for _, name := range providers {
+		if _, ok := wl[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses
