@@ -1,5 +1,6 @@
-# Binaries
-cli-proxy-api
+# Binaries (root-only — keep them out of root, but allow cmd/<name>/ source dirs)
+/cli-proxy-api
+/cli-proxy-api-vision
 *.exe
 
 # Configuration
