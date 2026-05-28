@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/guideline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -360,9 +361,11 @@ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAIResponses-compatible format.
 func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
+	apiKey := c.GetString("userApiKey")
+	models := apikeypolicy.FilterAllowedModels(h.Cfg, apiKey, h.Models())
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   h.Models(),
+		"data":   models,
 	})
 }
 

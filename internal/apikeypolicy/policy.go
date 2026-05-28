@@ -131,6 +131,69 @@ func CheckRequest(cfg *sdkconfig.SDKConfig, apiKey, handlerType string, provider
 	return providers, nil
 }
 
+// FilterAllowedModels returns the subset of model entries permitted by the API
+// key's allowed-models metadata. Each entry is identified via candidate id
+// strings derived from the "id", "name" and "slug" keys; any "models/" prefix
+// is stripped (matches Gemini's listing format).
+//
+// Behaviour:
+//   - cfg == nil, apiKey == "" or len(models) == 0: input is returned unchanged
+//     (no policy can be enforced or there is nothing to filter).
+//   - apiKey not registered in cfg.APIKeys or has no AllowedModels metadata:
+//     input is returned unchanged (legacy behaviour preserved for keys without
+//     model restrictions).
+//   - Entries without any extractable identifier are dropped defensively to
+//     avoid leaking models that cannot be policy-checked.
+//
+// The returned slice is a freshly-allocated copy; callers may mutate it
+// without affecting the input.
+func FilterAllowedModels(cfg *sdkconfig.SDKConfig, apiKey string, models []map[string]any) []map[string]any {
+	apiKey = strings.TrimSpace(apiKey)
+	if cfg == nil || apiKey == "" || len(models) == 0 {
+		return models
+	}
+	meta, ok := metadataForAPIKey(cfg, apiKey)
+	if !ok || len(meta.AllowedModels) == 0 {
+		return models
+	}
+	out := make([]map[string]any, 0, len(models))
+	for _, entry := range models {
+		id := modelEntryIdentifier(entry)
+		if id == "" {
+			continue
+		}
+		if modelAllowed(meta.AllowedModels, modelCandidates(id, id)) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// modelEntryIdentifier extracts the canonical model id from a model entry as
+// produced by handler Models() helpers. Tries "id", then "name", then "slug",
+// stripping any "models/" prefix used by the Gemini-style listing format.
+func modelEntryIdentifier(entry map[string]any) string {
+	if entry == nil {
+		return ""
+	}
+	for _, key := range []string{"id", "name", "slug"} {
+		raw, ok := entry[key]
+		if !ok {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.TrimPrefix(value, "models/")
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func metadataForAPIKey(cfg *sdkconfig.SDKConfig, apiKey string) (internalconfig.APIKeyMetadata, bool) {
 	if cfg == nil {
 		return internalconfig.APIKeyMetadata{}, false

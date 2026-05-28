@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
@@ -956,6 +957,38 @@ type homeModelEntry struct {
 	displayName string
 }
 
+// filterHomeModelEntries returns the subset of home-mode model entries the
+// authenticated API key is permitted to see, based on its allowed-models
+// metadata. When the key has no policy configured, the input is returned
+// unchanged.
+func (s *Server) filterHomeModelEntries(c *gin.Context, entries []homeModelEntry) []homeModelEntry {
+	if s == nil || s.cfg == nil || c == nil || len(entries) == 0 {
+		return entries
+	}
+	apiKey := c.GetString("userApiKey")
+	asMaps := make([]map[string]any, len(entries))
+	for i, entry := range entries {
+		asMaps[i] = map[string]any{"id": entry.id}
+	}
+	filtered := apikeypolicy.FilterAllowedModels(&s.cfg.SDKConfig, apiKey, asMaps)
+	if len(filtered) == len(entries) {
+		return entries
+	}
+	allowed := make(map[string]struct{}, len(filtered))
+	for _, entry := range filtered {
+		if id, ok := entry["id"].(string); ok {
+			allowed[id] = struct{}{}
+		}
+	}
+	out := make([]homeModelEntry, 0, len(filtered))
+	for _, entry := range entries {
+		if _, ok := allowed[entry.id]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func (s *Server) handleHomeModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
@@ -1091,7 +1124,9 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		return nil, false
 	}
 
-	return entries, true
+	// Apply per-key allowed-models filter so home-mode listings respect the
+	// same policy as direct registry-backed handlers.
+	return s.filterHomeModelEntries(c, entries), true
 }
 
 func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/guideline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -60,13 +61,17 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAI-compatible format.
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
+	// Apply per-key allowed-models filter so clients only see models the
+	// API key is permitted to invoke. Filtering happens on the registry
+	// snapshot before any format-specific shaping (Codex client catalog or
+	// the standard OpenAI list view).
+	apiKey := c.GetString("userApiKey")
+	allModels := apikeypolicy.FilterAllowedModels(h.Cfg, apiKey, h.Models())
+
 	if _, ok := c.Request.URL.Query()["client_version"]; ok {
-		c.JSON(http.StatusOK, h.codexClientModelsResponse())
+		c.JSON(http.StatusOK, CodexClientModelsResponse(allModels))
 		return
 	}
-
-	// Get all available models
-	allModels := h.Models()
 
 	// Filter to only include the 4 required fields: id, object, created, owned_by
 	filteredModels := make([]map[string]any, len(allModels))

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/guideline"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -49,7 +50,8 @@ func (h *GeminiAPIHandler) Models() []map[string]any {
 // GeminiModels handles the Gemini models listing endpoint.
 // It returns a JSON response containing available Gemini models and their specifications.
 func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
-	rawModels := h.Models()
+	apiKey := c.GetString("userApiKey")
+	rawModels := apikeypolicy.FilterAllowedModels(h.Cfg, apiKey, h.Models())
 	normalizedModels := make([]map[string]any, 0, len(rawModels))
 	defaultMethods := []string{"generateContent"}
 	for _, model := range rawModels {
@@ -95,8 +97,10 @@ func (h *GeminiAPIHandler) GeminiGetHandler(c *gin.Context) {
 	}
 	action := strings.TrimPrefix(request.Action, "/")
 
-	// Get dynamic models from the global registry and find the matching one
-	availableModels := h.Models()
+	// Get dynamic models from the global registry and find the matching one,
+	// scoped to the models the API key is permitted to see.
+	apiKey := c.GetString("userApiKey")
+	availableModels := apikeypolicy.FilterAllowedModels(h.Cfg, apiKey, h.Models())
 	var targetModel map[string]any
 
 	for _, model := range availableModels {

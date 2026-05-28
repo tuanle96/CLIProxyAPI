@@ -210,3 +210,99 @@ func TestPostgresLedgerUpsertAndRead(t *testing.T) {
 		t.Fatalf("usage = %#v, want accumulated upsert values", usage)
 	}
 }
+
+
+func TestFilterAllowedModelsRespectsKeyMetadata(t *testing.T) {
+	t.Cleanup(ResetForTesting)
+	ResetForTesting()
+
+	key := "sk-filter-test"
+	cfg := &sdkconfig.SDKConfig{
+		APIKeys: []string{key},
+		APIKeyMetadata: map[string]internalconfig.APIKeyMetadata{
+			internalconfig.APIKeyID(key): {
+				AllowedModels: []string{"deepseek*", "mimo*"},
+			},
+		},
+	}
+
+	models := []map[string]any{
+		{"id": "deepseek-v3"},
+		{"id": "deepseek-r1"},
+		{"id": "mimo-v2.5-tts"},
+		{"id": "claude-sonnet-4-5"},
+		{"id": "gpt-5.2"},
+		{"id": "kimi-k2.6"},
+	}
+
+	got := FilterAllowedModels(cfg, key, models)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 models after filter, got %d: %#v", len(got), got)
+	}
+	wantIDs := map[string]bool{"deepseek-v3": true, "deepseek-r1": true, "mimo-v2.5-tts": true}
+	for _, entry := range got {
+		id, _ := entry["id"].(string)
+		if !wantIDs[id] {
+			t.Fatalf("unexpected model in filter output: %s", id)
+		}
+	}
+}
+
+func TestFilterAllowedModelsPassthroughWithoutPolicy(t *testing.T) {
+	t.Cleanup(ResetForTesting)
+	ResetForTesting()
+
+	models := []map[string]any{{"id": "claude-opus-4-5"}, {"id": "gpt-5.2"}}
+
+	// No cfg / no key — return input untouched.
+	if got := FilterAllowedModels(nil, "any", models); len(got) != 2 {
+		t.Fatalf("nil cfg should return input unchanged, got %d", len(got))
+	}
+	if got := FilterAllowedModels(&sdkconfig.SDKConfig{}, "", models); len(got) != 2 {
+		t.Fatalf("empty key should return input unchanged, got %d", len(got))
+	}
+
+	// Key exists but no allowed-models metadata — passthrough.
+	key := "sk-no-policy"
+	cfg := &sdkconfig.SDKConfig{
+		APIKeys:        []string{key},
+		APIKeyMetadata: map[string]internalconfig.APIKeyMetadata{internalconfig.APIKeyID(key): {}},
+	}
+	if got := FilterAllowedModels(cfg, key, models); len(got) != 2 {
+		t.Fatalf("key without allowed-models should passthrough, got %d", len(got))
+	}
+
+	// Unknown key (not registered in cfg.APIKeys) — passthrough so an in-flight
+	// rotation cannot accidentally hide the catalog from a still-valid key.
+	if got := FilterAllowedModels(cfg, "sk-unknown", models); len(got) != 2 {
+		t.Fatalf("unknown key should passthrough, got %d", len(got))
+	}
+}
+
+func TestFilterAllowedModelsHandlesGeminiAndCodexShapes(t *testing.T) {
+	t.Cleanup(ResetForTesting)
+	ResetForTesting()
+
+	key := "sk-shapes"
+	cfg := &sdkconfig.SDKConfig{
+		APIKeys: []string{key},
+		APIKeyMetadata: map[string]internalconfig.APIKeyMetadata{
+			internalconfig.APIKeyID(key): {AllowedModels: []string{"gemini-2.5*", "gpt-5.2"}},
+		},
+	}
+
+	models := []map[string]any{
+		{"name": "models/gemini-2.5-pro"},      // Gemini-style with prefix
+		{"name": "models/gemini-1.5-flash"},    // does not match
+		{"slug": "gpt-5.2"},                    // Codex client style
+		{"slug": "gpt-5.4-mini"},               // does not match
+		{"id": "deepseek-v3"},                  // does not match
+		{"id": "", "name": "", "slug": ""},     // empty identifiers — dropped
+		{"description": "no identifier field"}, // missing identifier — dropped
+	}
+
+	got := FilterAllowedModels(cfg, key, models)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 models, got %d: %#v", len(got), got)
+	}
+}
