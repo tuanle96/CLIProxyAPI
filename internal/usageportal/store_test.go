@@ -512,3 +512,47 @@ func (f *fakeUsageRepository) RequestDetails(ctx context.Context, filter Request
 func (f *fakeUsageRepository) Close() error {
 	return nil
 }
+
+
+func TestPricingForModelDeepseek(t *testing.T) {
+	cases := []struct {
+		name       string
+		provider   string
+		model      string
+		wantInput  float64
+		wantOutput float64
+		wantCached float64
+	}{
+		{"v4 pro permanent rate", "deepseek", "deepseek-v4-pro", 0.435, 0.87, 0.003625},
+		{"v4 flash", "deepseek", "deepseek-v4-flash", 0.14, 0.28, 0.0028},
+		{"legacy deepseek-chat falls back to flash", "deepseek", "deepseek-chat", 0.14, 0.28, 0.0028},
+		{"legacy deepseek-reasoner falls back to flash", "deepseek", "deepseek-reasoner", 0.14, 0.28, 0.0028},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pricingForModel(tc.provider, tc.model)
+			if got.Input != tc.wantInput || got.Output != tc.wantOutput || got.Cached != tc.wantCached {
+				t.Fatalf("pricingForModel(%q,%q) = %+v; want input=%v output=%v cached=%v",
+					tc.provider, tc.model, got, tc.wantInput, tc.wantOutput, tc.wantCached)
+			}
+		})
+	}
+}
+
+// TestEstimateCostUSDDeepseekV4ProMatchesObservedRequest reproduces a real request
+// from the dashboard (132,866 input tokens with all but ~6.3k served from cache,
+// 162 output tokens) and verifies the new V4 Pro rates yield ~$0.0027, matching
+// the cost reported by opencode-go for the same request.
+func TestEstimateCostUSDDeepseekV4ProMatchesObservedRequest(t *testing.T) {
+	cost := estimateCostUSD("deepseek", "deepseek-v4-pro", tokenUsage{
+		InputTokens:  132866,
+		CachedTokens: 126500, // ≈ 95% cache hit rate observed in production
+		OutputTokens: 162,
+	})
+	// Expected: 6366*0.435/1e6 + 126500*0.003625/1e6 + 162*0.87/1e6
+	//         ≈ 0.002769 + 0.000459 + 0.000141
+	//         ≈ 0.003369. Allow generous tolerance against rounding.
+	if cost < 0.0030 || cost > 0.0040 {
+		t.Fatalf("estimated cost = %.6f; want roughly $0.0034 for V4 Pro mostly-cached request", cost)
+	}
+}

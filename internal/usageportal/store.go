@@ -1940,7 +1940,12 @@ func pricingForModel(provider, model string) modelPricing {
 			return modelPricing{Input: 0.3, Output: 2.5, Cached: 0.03, Reasoning: 3.75, CacheCreation: 0.3}
 		}
 		return modelPricing{Input: 2, Output: 12, Cached: 0.25, Reasoning: 18, CacheCreation: 2}
+	case strings.Contains(value, "deepseek-v4-pro"):
+		// Permanent pricing since 2026-05-22 (the 75%-off promo became the standing rate).
+		// Source: https://api-docs.deepseek.com/quick_start/pricing
+		return modelPricing{Input: 0.435, Output: 0.87, Cached: 0.003625, Reasoning: 0.87, CacheCreation: 0.435}
 	case strings.Contains(value, "deepseek"):
+		// deepseek-v4-flash and legacy aliases (deepseek-chat, deepseek-reasoner).
 		return modelPricing{Input: 0.14, Output: 0.28, Cached: 0.0028, Reasoning: 0.28, CacheCreation: 0.14}
 	case strings.Contains(value, "qwen"):
 		return modelPricing{Input: 0.5, Output: 2, Cached: 0.25, Reasoning: 3, CacheCreation: 0.5}
