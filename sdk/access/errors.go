@@ -12,6 +12,7 @@ type AuthErrorCode string
 const (
 	AuthErrorCodeNoCredentials     AuthErrorCode = "no_credentials"
 	AuthErrorCodeInvalidCredential AuthErrorCode = "invalid_credential"
+	AuthErrorCodeForbidden         AuthErrorCode = "forbidden"
 	AuthErrorCodeNotHandled        AuthErrorCode = "not_handled"
 	AuthErrorCodeInternal          AuthErrorCode = "internal_error"
 )
@@ -68,6 +69,14 @@ func NewNoCredentialsError() *AuthError {
 
 func NewInvalidCredentialError() *AuthError {
 	return newAuthError(AuthErrorCodeInvalidCredential, "Invalid API key", http.StatusUnauthorized, nil)
+}
+
+func NewForbiddenCredentialError(message string) *AuthError {
+	normalizedMessage := strings.TrimSpace(message)
+	if normalizedMessage == "" {
+		normalizedMessage = "API key is not allowed"
+	}
+	return newAuthError(AuthErrorCodeForbidden, normalizedMessage, http.StatusForbidden, nil)
 }
 
 func NewNotHandledError() *AuthError {

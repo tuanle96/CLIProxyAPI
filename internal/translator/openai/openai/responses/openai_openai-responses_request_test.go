@@ -122,3 +122,63 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 		t.Fatalf("messages.3.content = %q, want %q", got, "next")
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesReasoningForAssistantTextAndToolCall(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"think first"},{"type":"summary_text","text":"then call"}],"encrypted_content":"encrypted fallback"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will inspect it"}]},
+			{"type":"function_call","call_id":"call_read","name":"read","arguments":"{\"path\":\"README.md\"}"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-pro", raw, true)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	want := "think first\nthen call"
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != want {
+		t.Fatalf("assistant text reasoning_content = %q, want %q", got, want)
+	}
+	if got := gjson.GetBytes(out, "messages.1.reasoning_content").String(); got != want {
+		t.Fatalf("assistant tool_call reasoning_content = %q, want %q", got, want)
+	}
+	if got := gjson.GetBytes(out, "messages.1.tool_calls.0.id").String(); got != "call_read" {
+		t.Fatalf("tool call id = %q, want call_read", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ReasoningEncryptedContentFallback(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"reasoning","encrypted_content":"preserved encrypted content","summary":[]},
+			{"type":"function_call","call_id":"call_lookup","name":"lookup","arguments":"{}"}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-pro", raw, false)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "preserved encrypted content" {
+		t.Fatalf("reasoning_content = %q, want encrypted fallback", got)
+	}
+	if got := gjson.GetBytes(out, "messages.0.tool_calls.0.id").String(); got != "call_lookup" {
+		t.Fatalf("tool call id = %q, want call_lookup", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ClearsReasoningOnUnrelatedTurn(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"old reasoning"}]},
+			{"type":"message","role":"user","content":"new unrelated turn"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-pro", raw, false)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if gjson.GetBytes(out, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("unexpected reasoning_content leaked into unrelated assistant: %s", string(out))
+	}
+}

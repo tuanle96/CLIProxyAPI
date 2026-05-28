@@ -13,11 +13,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -30,6 +32,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tui"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usageportal"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -484,6 +487,75 @@ func main() {
 			}
 		}
 	}
+	if cfg.UsageStore.DSN == "" && pgStoreDSN != "" {
+		cfg.UsageStore.Type = "postgres"
+		cfg.UsageStore.DSN = pgStoreDSN
+		if cfg.UsageStore.Schema == "" {
+			cfg.UsageStore.Schema = pgStoreSchema
+		}
+	}
+	if value, ok := lookupEnv("USAGESTORE_DSN", "usagestore_dsn"); ok {
+		cfg.UsageStore.Type = "postgres"
+		cfg.UsageStore.DSN = value
+	}
+	if value, ok := lookupEnv("USAGESTORE_SCHEMA", "usagestore_schema"); ok {
+		cfg.UsageStore.Schema = value
+	}
+	if value, ok := lookupEnv("USAGESTORE_EVENTS_TABLE", "usagestore_events_table"); ok {
+		cfg.UsageStore.EventsTable = value
+	}
+	if value, ok := lookupEnv("USAGESTORE_HOURLY_ROLLUP_TABLE", "usagestore_hourly_rollup_table"); ok {
+		cfg.UsageStore.HourlyRollupTable = value
+	}
+	if value, ok := lookupEnv("USAGESTORE_DAILY_ROLLUP_TABLE", "usagestore_daily_rollup_table"); ok {
+		cfg.UsageStore.DailyRollupTable = value
+	}
+	if value, ok := lookupEnv("USAGESTORE_ROLLUPS_ENABLED", "usagestore_rollups_enabled"); ok {
+		parsed, errParse := strconv.ParseBool(value)
+		if errParse != nil {
+			log.WithError(errParse).Warn("invalid USAGESTORE_ROLLUPS_ENABLED; keeping configured value")
+		} else {
+			cfg.UsageStore.RollupsEnabled = parsed
+		}
+	}
+	if value, ok := lookupEnv("USAGESTORE_ROLLUP_QUERY_MIN_EVENTS", "usagestore_rollup_query_min_events"); ok {
+		parsed, errParse := strconv.ParseInt(value, 10, 64)
+		if errParse != nil {
+			log.WithError(errParse).Warn("invalid USAGESTORE_ROLLUP_QUERY_MIN_EVENTS; keeping configured value")
+		} else {
+			cfg.UsageStore.RollupQueryMinEvents = parsed
+		}
+	}
+	cfg.UsageStore.ApplyDefaults()
+	if cfg.UsageStore.PostgresEnabled() {
+		ctxUsageStore, cancelUsageStore := context.WithTimeout(context.Background(), 30*time.Second)
+		usageRepo, errUsageRepo := usageportal.NewPostgresRepository(ctxUsageStore, usageportal.PostgresRepositoryConfig{
+			DSN:                  cfg.UsageStore.DSN,
+			Schema:               cfg.UsageStore.Schema,
+			EventsTable:          cfg.UsageStore.EventsTable,
+			HourlyRollupTable:    cfg.UsageStore.HourlyRollupTable,
+			DailyRollupTable:     cfg.UsageStore.DailyRollupTable,
+			RollupsEnabled:       cfg.UsageStore.RollupsEnabled,
+			RollupQueryMinEvents: cfg.UsageStore.RollupQueryMinEvents,
+		})
+		if errUsageRepo != nil {
+			cancelUsageStore()
+			log.Errorf("failed to initialize usage analytics postgres store: %v", errUsageRepo)
+			return
+		}
+		defer usageRepo.Close()
+		usageportal.SetRepository(usageRepo)
+		if errQuotaLedger := apikeypolicy.ConfigurePostgresLedger(ctxUsageStore, apikeypolicy.PostgresLedgerConfig{
+			DSN:    cfg.UsageStore.DSN,
+			Schema: cfg.UsageStore.Schema,
+		}); errQuotaLedger != nil {
+			log.Errorf("failed to initialize api key quota postgres ledger: %v", errQuotaLedger)
+		}
+		cancelUsageStore()
+		log.Infof("usage analytics postgres store enabled, events table: %s", cfg.UsageStore.EventsTable)
+	} else {
+		usageportal.SetRepository(nil)
+	}
 	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
@@ -503,6 +575,11 @@ func main() {
 		return
 	} else {
 		cfg.AuthDir = resolvedAuthDir
+	}
+	if !cfg.UsageStore.PostgresEnabled() {
+		if errQuotaLedger := apikeypolicy.ConfigureFileLedger(cfg.AuthDir); errQuotaLedger != nil {
+			log.Errorf("failed to initialize api key quota file ledger: %v", errQuotaLedger)
+		}
 	}
 	managementasset.SetCurrentConfig(cfg)
 

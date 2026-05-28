@@ -11,10 +11,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usageportal"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+type usageAnalyticsAPIKeyGroupPayload struct {
+	APIKeyLabel        string `json:"api_key_label"`
+	APIKeyName         string `json:"api_key_name"`
+	APIKeyFingerprint  string `json:"api_key_fingerprint"`
+	APIKeyDisplayLabel string `json:"api_key_display_label"`
+}
 
 func TestGetUsageAnalyticsStatsReturnsAggregates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -73,6 +81,197 @@ func TestGetUsageAnalyticsStatsReturnsAggregates(t *testing.T) {
 	}
 }
 
+func TestGetUsageAnalyticsStatsDecoratesAPIKeyNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetUsageAnalyticsForTest(t)
+	namedKey := "sk-named-key-123456"
+	unnamedKey := "sk-unnamed-key-123456"
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      namedKey,
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 7},
+	})
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      unnamedKey,
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 3},
+	})
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-analytics/stats?period=today", nil)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []string{namedKey, unnamedKey},
+		APIKeyMetadata: map[string]config.APIKeyMetadata{
+			config.APIKeyID(namedKey): {Name: "CI runner"},
+		},
+	}}}
+	h.GetUsageAnalyticsStats(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		ByAPIKey       []usageAnalyticsAPIKeyGroupPayload `json:"by_api_key"`
+		RecentRequests []struct {
+			APIKeyName         string `json:"api_key_name"`
+			APIKeyFingerprint  string `json:"api_key_fingerprint"`
+			APIKeyDisplayLabel string `json:"api_key_display_label"`
+		} `json:"recent_requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	named := findAPIKeyGroup(t, payload.ByAPIKey, config.MaskAPIKey(namedKey))
+	if named.APIKeyLabel != config.MaskAPIKey(namedKey) {
+		t.Fatalf("api_key_label changed = %q, want %q", named.APIKeyLabel, config.MaskAPIKey(namedKey))
+	}
+	if named.APIKeyName != "CI runner" || named.APIKeyDisplayLabel != "CI runner" || named.APIKeyFingerprint != config.MaskAPIKey(namedKey) {
+		t.Fatalf("named group = %+v", named)
+	}
+	unnamed := findAPIKeyGroup(t, payload.ByAPIKey, config.MaskAPIKey(unnamedKey))
+	if unnamed.APIKeyName != "" || unnamed.APIKeyDisplayLabel != config.MaskAPIKey(unnamedKey) || unnamed.APIKeyFingerprint != config.MaskAPIKey(unnamedKey) {
+		t.Fatalf("unnamed group = %+v", unnamed)
+	}
+	if len(payload.RecentRequests) == 0 {
+		t.Fatal("expected recent requests")
+	}
+}
+
+func findAPIKeyGroup(t *testing.T, groups []usageAnalyticsAPIKeyGroupPayload, fingerprint string) usageAnalyticsAPIKeyGroupPayload {
+	t.Helper()
+	for _, group := range groups {
+		if group.APIKeyLabel == fingerprint {
+			return group
+		}
+	}
+	t.Fatalf("missing API key group for %q in %+v", fingerprint, groups)
+	return usageAnalyticsAPIKeyGroupPayload{}
+}
+
+func TestGetUsageAnalyticsRequestDetailsFiltersUniqueAPIKeyName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetUsageAnalyticsForTest(t)
+	key := "sk-filter-key-123456"
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      key,
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 9},
+	})
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      "sk-other-key-123456",
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 4},
+	})
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-analytics/request-details?api_key=Production%20App", nil)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []string{key, "sk-other-key-123456"},
+		APIKeyMetadata: map[string]config.APIKeyMetadata{
+			config.APIKeyID(key): {Name: "Production App"},
+		},
+	}}}
+	h.GetUsageAnalyticsRequestDetails(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Details []struct {
+			APIKeyLabel        string `json:"api_key_label"`
+			APIKeyName         string `json:"api_key_name"`
+			APIKeyFingerprint  string `json:"api_key_fingerprint"`
+			APIKeyDisplayLabel string `json:"api_key_display_label"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Details) != 1 {
+		t.Fatalf("details len = %d, want 1; payload=%+v", len(payload.Details), payload.Details)
+	}
+	if payload.Details[0].APIKeyLabel != config.MaskAPIKey(key) {
+		t.Fatalf("api_key_label = %q, want %q", payload.Details[0].APIKeyLabel, config.MaskAPIKey(key))
+	}
+	if payload.Details[0].APIKeyName != "Production App" || payload.Details[0].APIKeyDisplayLabel != "Production App" || payload.Details[0].APIKeyFingerprint != config.MaskAPIKey(key) {
+		t.Fatalf("detail identity = %+v", payload.Details[0])
+	}
+}
+
+func TestGetUsageAnalyticsRequestDetailsDoesNotGuessDuplicateAPIKeyName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetUsageAnalyticsForTest(t)
+	keyA := "sk-shared-a-123456"
+	keyB := "sk-second-b-654321"
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      keyA,
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 5},
+	})
+	publishUsageAnalyticsRecord(t, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      keyB,
+		RequestedAt: time.Now(),
+		Detail:      coreusage.Detail{TotalTokens: 6},
+	})
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []string{keyA, keyB},
+		APIKeyMetadata: map[string]config.APIKeyMetadata{
+			config.APIKeyID(keyA): {Name: "Shared"},
+			config.APIKeyID(keyB): {Name: "Shared"},
+		},
+	}}}
+
+	rec := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-analytics/request-details?api_key=Shared", nil)
+	h.GetUsageAnalyticsRequestDetails(ginCtx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Details []usageportal.RequestDetail `json:"details"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Details) != 0 {
+		t.Fatalf("duplicate name filter returned %d details, want 0", len(payload.Details))
+	}
+
+	rec = httptest.NewRecorder()
+	ginCtx, _ = gin.CreateTestContext(rec)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-analytics/request-details?api_key="+config.MaskAPIKey(keyA), nil)
+	h.GetUsageAnalyticsRequestDetails(ginCtx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fingerprint status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal fingerprint response: %v", err)
+	}
+	if len(payload.Details) != 1 || payload.Details[0].APIKeyFingerprint != config.MaskAPIKey(keyA) {
+		t.Fatalf("fingerprint filter details = %+v", payload.Details)
+	}
+}
+
 func TestGetUsageAnalyticsStatsRejectsInvalidPeriod(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -104,20 +303,31 @@ func TestGetUsageAnalyticsRequestDetailsValidatesPageSize(t *testing.T) {
 func TestGetUsageAnalyticsAPIKeyResolvesConfigKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	resetUsageAnalyticsForTest(t)
+	key := "sk-test-key-123456"
+	meta := config.APIKeyMetadata{
+		QuotaPeriod:     config.APIKeyQuotaPeriodDaily,
+		TokenQuotaLimit: 10,
+	}
 	publishUsageAnalyticsRecord(t, coreusage.Record{
 		Provider:    "openai",
 		Model:       "gpt-5.5",
-		APIKey:      "sk-test-key-123456",
+		APIKey:      key,
 		RequestedAt: time.Now(),
 		Detail:      coreusage.Detail{TotalTokens: 9},
 	})
+	waitQuotaUsageForTest(t, key, meta, 9)
 
 	rec := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rec)
 	ginCtx.Params = gin.Params{{Key: "id", Value: "0"}}
 	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/usage-analytics/api-keys/0?period=today", nil)
 
-	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{APIKeys: []string{"sk-test-key-123456"}}}}
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{
+		APIKeys: []string{key},
+		APIKeyMetadata: map[string]config.APIKeyMetadata{
+			config.APIKeyID(key): meta,
+		},
+	}}}
 	h.GetUsageAnalyticsAPIKey(ginCtx)
 
 	if rec.Code != http.StatusOK {
@@ -128,6 +338,7 @@ func TestGetUsageAnalyticsAPIKeyResolvesConfigKey(t *testing.T) {
 			Requests int64 `json:"requests"`
 		} `json:"stats"`
 		Requests []usageportal.RecentRequest `json:"requests"`
+		Quotas   []apikeypolicy.QuotaStatus  `json:"quotas"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -137,6 +348,15 @@ func TestGetUsageAnalyticsAPIKeyResolvesConfigKey(t *testing.T) {
 	}
 	if len(payload.Requests) != 1 {
 		t.Fatalf("recent requests = %d, want 1", len(payload.Requests))
+	}
+	if len(payload.Quotas) != 1 {
+		t.Fatalf("quotas = %d, want 1", len(payload.Quotas))
+	}
+	if payload.Quotas[0].Period != config.APIKeyQuotaPeriodDaily {
+		t.Fatalf("quota period = %q, want daily", payload.Quotas[0].Period)
+	}
+	if payload.Quotas[0].TokenQuota.Used != 9 || payload.Quotas[0].TokenQuota.Remaining != 1 {
+		t.Fatalf("token quota = %#v, want used=9 remaining=1", payload.Quotas[0].TokenQuota)
 	}
 }
 
@@ -214,22 +434,38 @@ func resetUsageAnalyticsForTest(t *testing.T) {
 	t.Helper()
 	usageportal.ResetForTesting()
 	usageportal.SetEnabled(true)
+	apikeypolicy.ResetForTesting()
 	t.Cleanup(func() {
 		usageportal.ResetForTesting()
+		apikeypolicy.ResetForTesting()
 	})
 }
 
 func publishUsageAnalyticsRecord(t *testing.T, record coreusage.Record) {
 	t.Helper()
+	before := usageportal.Analytics("today", time.Now()).Totals.Requests
 	coreusage.PublishRecord(context.Background(), record)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if usageportal.Analytics("today", time.Now()).Totals.Requests > 0 {
+		if usageportal.Analytics("today", time.Now()).Totals.Requests > before {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for usage record")
+}
+
+func waitQuotaUsageForTest(t *testing.T, apiKey string, meta config.APIKeyMetadata, usedTokens int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := apikeypolicy.StatusForAPIKey(apiKey, meta, time.Now())
+		if err == nil && status.TokenQuota.Used >= usedTokens {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("quota usage did not reach %d tokens within deadline", usedTokens)
 }
 
 func readUsageAnalyticsStreamSnapshot(t *testing.T, reader *bufio.Reader, timeout time.Duration) usageportal.AnalyticsSnapshot {

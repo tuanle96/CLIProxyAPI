@@ -15,12 +15,14 @@ go test -v -run TestName ./path/to/pkg # Run single test
 go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
+- Production safety: do not deploy, replace, restart, reload, `kickstart`, `bootout/bootstrap`, or otherwise touch the running production `cli-proxy-api` binary/process unless the user explicitly asks for that action in the current task. Building test artifacts, running tests, and browser/curl read-only checks are allowed.
 
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+- Management control panel assets are served from a cached `management.html` downloaded from GitHub Releases. Keep the default panel source on the user's fork: `https://github.com/tuanle96/Cli-Proxy-API-Management-Center`. Do not revert it to `router-for-me/Cli-Proxy-API-Management-Center` unless explicitly requested. The fork must publish a latest GitHub Release with an asset named `management.html`; otherwise existing local cache may continue to serve the old panel.
 
 ## Architecture
 - `cmd/server/` — Server entrypoint

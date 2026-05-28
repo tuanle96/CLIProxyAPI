@@ -48,40 +48,45 @@ type Aggregate struct {
 }
 
 type DailyPoint struct {
-	Date string `json:"date"`
+	Date  string `json:"date"`
+	Label string `json:"label,omitempty"`
 	Aggregate
 }
 
 type ChartPoint struct {
-	Label    string  `json:"label"`
-	Date     string  `json:"date,omitempty"`
-	Requests int64   `json:"requests"`
-	Tokens   int64   `json:"tokens"`
-	CostUSD  float64 `json:"cost_usd"`
+	Label     string     `json:"label"`
+	Date      string     `json:"date,omitempty"`
+	Requests  int64      `json:"requests"`
+	Tokens    int64      `json:"tokens"`
+	Breakdown tokenUsage `json:"breakdown"`
+	CostUSD   float64    `json:"cost_usd"`
 }
 
 type RecentRequest struct {
-	Time            time.Time `json:"time"`
-	Provider        string    `json:"provider"`
-	Model           string    `json:"model"`
-	Alias           string    `json:"alias,omitempty"`
-	Source          string    `json:"source,omitempty"`
-	AccountLabel    string    `json:"account_label,omitempty"`
-	APIKeyLabel     string    `json:"api_key_label,omitempty"`
-	AuthIndex       string    `json:"auth_index,omitempty"`
-	AuthType        string    `json:"auth_type,omitempty"`
-	Endpoint        string    `json:"endpoint,omitempty"`
-	RequestID       string    `json:"request_id,omitempty"`
-	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
-	InputTokens     int64     `json:"input_tokens"`
-	OutputTokens    int64     `json:"output_tokens"`
-	ReasoningTokens int64     `json:"reasoning_tokens"`
-	CachedTokens    int64     `json:"cached_tokens"`
-	TotalTokens     int64     `json:"total_tokens"`
-	CostUSD         float64   `json:"cost_usd"`
-	LatencyMs       int64     `json:"latency_ms"`
-	StatusCode      int       `json:"status_code"`
-	Failed          bool      `json:"failed"`
+	Time               time.Time `json:"time"`
+	Provider           string    `json:"provider"`
+	Model              string    `json:"model"`
+	Alias              string    `json:"alias,omitempty"`
+	Source             string    `json:"source,omitempty"`
+	AccountLabel       string    `json:"account_label,omitempty"`
+	APIKeyLabel        string    `json:"api_key_label,omitempty"`
+	APIKeyName         string    `json:"api_key_name,omitempty"`
+	APIKeyFingerprint  string    `json:"api_key_fingerprint,omitempty"`
+	APIKeyDisplayLabel string    `json:"api_key_display_label,omitempty"`
+	AuthIndex          string    `json:"auth_index,omitempty"`
+	AuthType           string    `json:"auth_type,omitempty"`
+	Endpoint           string    `json:"endpoint,omitempty"`
+	RequestID          string    `json:"request_id,omitempty"`
+	ReasoningEffort    string    `json:"reasoning_effort,omitempty"`
+	InputTokens        int64     `json:"input_tokens"`
+	OutputTokens       int64     `json:"output_tokens"`
+	ReasoningTokens    int64     `json:"reasoning_tokens"`
+	CachedTokens       int64     `json:"cached_tokens"`
+	TotalTokens        int64     `json:"total_tokens"`
+	CostUSD            float64   `json:"cost_usd"`
+	LatencyMs          int64     `json:"latency_ms"`
+	StatusCode         int       `json:"status_code"`
+	Failed             bool      `json:"failed"`
 }
 
 type Snapshot struct {
@@ -97,37 +102,43 @@ type Snapshot struct {
 }
 
 type AnalyticsGroup struct {
-	Key             string     `json:"key"`
-	Provider        string     `json:"provider,omitempty"`
-	Model           string     `json:"model,omitempty"`
-	Alias           string     `json:"alias,omitempty"`
-	AccountLabel    string     `json:"account_label,omitempty"`
-	APIKeyLabel     string     `json:"api_key_label,omitempty"`
-	Endpoint        string     `json:"endpoint,omitempty"`
-	LastUsed        *time.Time `json:"last_used,omitempty"`
-	Requests        int64      `json:"requests"`
-	Success         int64      `json:"success"`
-	Failed          int64      `json:"failed"`
-	InputTokens     int64      `json:"input_tokens"`
-	OutputTokens    int64      `json:"output_tokens"`
-	ReasoningTokens int64      `json:"reasoning_tokens"`
-	CachedTokens    int64      `json:"cached_tokens"`
-	TotalTokens     int64      `json:"total_tokens"`
-	CostUSD         float64    `json:"cost_usd"`
+	Key                string     `json:"key"`
+	Provider           string     `json:"provider,omitempty"`
+	Model              string     `json:"model,omitempty"`
+	Alias              string     `json:"alias,omitempty"`
+	AccountLabel       string     `json:"account_label,omitempty"`
+	APIKeyLabel        string     `json:"api_key_label,omitempty"`
+	APIKeyName         string     `json:"api_key_name,omitempty"`
+	APIKeyFingerprint  string     `json:"api_key_fingerprint,omitempty"`
+	APIKeyDisplayLabel string     `json:"api_key_display_label,omitempty"`
+	Endpoint           string     `json:"endpoint,omitempty"`
+	LastUsed           *time.Time `json:"last_used,omitempty"`
+	Requests           int64      `json:"requests"`
+	Success            int64      `json:"success"`
+	Failed             int64      `json:"failed"`
+	InputTokens        int64      `json:"input_tokens"`
+	OutputTokens       int64      `json:"output_tokens"`
+	ReasoningTokens    int64      `json:"reasoning_tokens"`
+	CachedTokens       int64      `json:"cached_tokens"`
+	TotalTokens        int64      `json:"total_tokens"`
+	CostUSD            float64    `json:"cost_usd"`
 }
 
 type ActiveRequest struct {
-	ID              string    `json:"id"`
-	Provider        string    `json:"provider"`
-	Model           string    `json:"model"`
-	Alias           string    `json:"alias,omitempty"`
-	AccountLabel    string    `json:"account_label,omitempty"`
-	APIKeyLabel     string    `json:"api_key_label,omitempty"`
-	Endpoint        string    `json:"endpoint,omitempty"`
-	RequestID       string    `json:"request_id,omitempty"`
-	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
-	StartedAt       time.Time `json:"started_at"`
-	AgeMs           int64     `json:"age_ms"`
+	ID                 string    `json:"id"`
+	Provider           string    `json:"provider"`
+	Model              string    `json:"model"`
+	Alias              string    `json:"alias,omitempty"`
+	AccountLabel       string    `json:"account_label,omitempty"`
+	APIKeyLabel        string    `json:"api_key_label,omitempty"`
+	APIKeyName         string    `json:"api_key_name,omitempty"`
+	APIKeyFingerprint  string    `json:"api_key_fingerprint,omitempty"`
+	APIKeyDisplayLabel string    `json:"api_key_display_label,omitempty"`
+	Endpoint           string    `json:"endpoint,omitempty"`
+	RequestID          string    `json:"request_id,omitempty"`
+	ReasoningEffort    string    `json:"reasoning_effort,omitempty"`
+	StartedAt          time.Time `json:"started_at"`
+	AgeMs              int64     `json:"age_ms"`
 }
 
 type AnalyticsSnapshot struct {
@@ -136,6 +147,7 @@ type AnalyticsSnapshot struct {
 	RetentionDays          int              `json:"retention_days"`
 	UpdatedAt              *time.Time       `json:"updated_at,omitempty"`
 	Totals                 Aggregate        `json:"totals"`
+	PreviousTotals         Aggregate        `json:"previous_totals"`
 	Series                 []ChartPoint     `json:"series"`
 	ActiveRequests         []ActiveRequest  `json:"active_requests"`
 	RecentRequests         []RecentRequest  `json:"recent_requests"`
@@ -175,6 +187,7 @@ type Pagination struct {
 
 type keyUsage struct {
 	daily       map[string]Aggregate
+	hourly      map[string]Aggregate
 	recent      []RecentRequest
 	lastUpdated time.Time
 }
@@ -194,27 +207,30 @@ type DetailLatency struct {
 }
 
 type RequestDetail struct {
-	ID                string        `json:"id"`
-	Timestamp         time.Time     `json:"timestamp"`
-	Provider          string        `json:"provider,omitempty"`
-	Model             string        `json:"model,omitempty"`
-	Alias             string        `json:"alias,omitempty"`
-	AccountLabel      string        `json:"account_label,omitempty"`
-	APIKeyLabel       string        `json:"api_key_label,omitempty"`
-	Endpoint          string        `json:"endpoint,omitempty"`
-	RequestID         string        `json:"request_id,omitempty"`
-	ReasoningEffort   string        `json:"reasoning_effort,omitempty"`
-	Status            string        `json:"status"`
-	StatusCode        int           `json:"status_code"`
-	Failed            bool          `json:"failed"`
-	Latency           DetailLatency `json:"latency"`
-	Tokens            tokenUsage    `json:"tokens"`
-	CostUSD           float64       `json:"cost_usd"`
-	Request           any           `json:"request,omitempty"`
-	ProviderRequest   any           `json:"provider_request,omitempty"`
-	ProviderResponse  any           `json:"provider_response,omitempty"`
-	Response          any           `json:"response,omitempty"`
-	WebsocketTimeline any           `json:"websocket_timeline,omitempty"`
+	ID                 string        `json:"id"`
+	Timestamp          time.Time     `json:"timestamp"`
+	Provider           string        `json:"provider,omitempty"`
+	Model              string        `json:"model,omitempty"`
+	Alias              string        `json:"alias,omitempty"`
+	AccountLabel       string        `json:"account_label,omitempty"`
+	APIKeyLabel        string        `json:"api_key_label,omitempty"`
+	APIKeyName         string        `json:"api_key_name,omitempty"`
+	APIKeyFingerprint  string        `json:"api_key_fingerprint,omitempty"`
+	APIKeyDisplayLabel string        `json:"api_key_display_label,omitempty"`
+	Endpoint           string        `json:"endpoint,omitempty"`
+	RequestID          string        `json:"request_id,omitempty"`
+	ReasoningEffort    string        `json:"reasoning_effort,omitempty"`
+	Status             string        `json:"status"`
+	StatusCode         int           `json:"status_code"`
+	Failed             bool          `json:"failed"`
+	Latency            DetailLatency `json:"latency"`
+	Tokens             tokenUsage    `json:"tokens"`
+	CostUSD            float64       `json:"cost_usd"`
+	Request            any           `json:"request,omitempty"`
+	ProviderRequest    any           `json:"provider_request,omitempty"`
+	ProviderResponse   any           `json:"provider_response,omitempty"`
+	Response           any           `json:"response,omitempty"`
+	WebsocketTimeline  any           `json:"websocket_timeline,omitempty"`
 }
 
 type HTTPMessageDetail struct {
@@ -267,6 +283,7 @@ type Store struct {
 	pendingHTTPDetails        map[string]HTTPRequestDetail
 	active                    map[string]ActiveRequest
 	subscribers               map[chan struct{}]struct{}
+	repository                Repository
 	activeSeq                 uint64
 	updatedAt                 time.Time
 }
@@ -331,6 +348,7 @@ func TrackActiveFinish(id string) {
 
 func ResetForTesting() {
 	defaultStore.Reset()
+	defaultStore.SetRepository(nil)
 }
 
 func WithHTTPRequestDetail(ctx context.Context, detail HTTPRequestDetail) context.Context {
@@ -432,6 +450,7 @@ func (s *Store) HandleUsage(ctx context.Context, record coreusage.Record) {
 
 	request, aggregate := requestFromRecord(ctx, record)
 	httpDetail := HTTPRequestDetailFromContext(ctx)
+	var detail RequestDetail
 
 	s.mu.Lock()
 
@@ -439,13 +458,20 @@ func (s *Store) HandleUsage(ctx context.Context, record coreusage.Record) {
 	if apiKey != "" {
 		entry := s.byKey[apiKey]
 		if entry == nil {
-			entry = &keyUsage{daily: make(map[string]Aggregate)}
+			entry = &keyUsage{
+				daily:  make(map[string]Aggregate),
+				hourly: make(map[string]Aggregate),
+			}
 			s.byKey[apiKey] = entry
 		}
 		day := localDay(request.Time)
 		existing := entry.daily[day]
 		existing.add(aggregate)
 		entry.daily[day] = existing
+		hour := localHour(request.Time)
+		hourly := entry.hourly[hour]
+		hourly.add(aggregate)
+		entry.hourly[hour] = hourly
 		entry.recent = append(entry.recent, request)
 		if len(entry.recent) > maxRecentRequests {
 			entry.recent = append([]RecentRequest(nil), entry.recent[len(entry.recent)-maxRecentRequests:]...)
@@ -470,10 +496,12 @@ func (s *Store) HandleUsage(ctx context.Context, record coreusage.Record) {
 			delete(s.pendingHTTPDetails, request.RequestID)
 		}
 	}
-	s.appendRequestDetailLocked(requestDetailFromRecord(request, record, httpDetail))
+	detail = requestDetailFromRecord(request, record, httpDetail)
+	s.appendRequestDetailLocked(detail)
 	s.updatedAt = request.Time.UTC()
 	s.pruneLocked(time.Now())
 	s.mu.Unlock()
+	s.persistUsageEvent(ctx, apiKey, request, detail)
 	s.notifySubscribers()
 }
 
@@ -491,6 +519,7 @@ func (s *Store) RecordHTTPRequestDetail(detail HTTPRequestDetail) {
 	}
 
 	updated := false
+	updatedDetails := make([]RequestDetail, 0)
 	s.mu.Lock()
 	if len(s.requestDetailsByRequestID[requestID]) == 0 {
 		existing := s.pendingHTTPDetails[requestID]
@@ -502,11 +531,13 @@ func (s *Store) RecordHTTPRequestDetail(detail HTTPRequestDetail) {
 				continue
 			}
 			applyHTTPRequestDetail(&s.details[idx], detail)
+			updatedDetails = append(updatedDetails, s.details[idx])
 			updated = true
 		}
 	}
 	s.mu.Unlock()
 	if updated {
+		s.persistRequestDetailUpdates(updatedDetails)
 		s.notifySubscribers()
 	}
 }
@@ -557,6 +588,9 @@ func (s *Store) Snapshot(apiKey string, windowDays int, active bool, now time.Ti
 	if now.IsZero() {
 		now = time.Now()
 	}
+	if out, ok := s.snapshotFromRepository(apiKey, windowDays, active, now); ok {
+		return out
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -569,27 +603,65 @@ func (s *Store) Snapshot(apiKey string, windowDays int, active bool, now time.Ti
 		RetentionDays:          retentionDays,
 		WindowDays:             windowDays,
 		Series:                 make([]DailyPoint, 0, windowDays),
+		RecentRequests:         make([]RecentRequest, 0),
 	}
 
 	entry := s.byKey[apiKey]
 	today := startOfLocalDay(now)
 	start := today.AddDate(0, 0, -(windowDays - 1))
-	for i := 0; i < windowDays; i++ {
-		day := start.AddDate(0, 0, i)
-		key := day.Format("2006-01-02")
-		aggregate := Aggregate{}
+
+	if windowDays == 1 {
+		out.Series = make([]DailyPoint, 0, 24)
+		hourly := make(map[string]Aggregate)
 		if entry != nil {
-			aggregate = entry.daily[key]
+			for key, aggregate := range entry.hourly {
+				hourly[key] = aggregate
+			}
+			if len(hourly) == 0 {
+				for _, request := range entry.recent {
+					if request.Time.Before(start.UTC()) || !request.Time.Before(start.AddDate(0, 0, 1).UTC()) {
+						continue
+					}
+					key := localHour(request.Time)
+					aggregate := hourly[key]
+					aggregate.add(aggregateFromRequest(request))
+					hourly[key] = aggregate
+				}
+			}
 		}
-		out.Totals.add(aggregate)
-		out.Series = append(out.Series, DailyPoint{
-			Date:      key,
-			Aggregate: aggregate,
-		})
+		for i := 0; i < 24; i++ {
+			hour := start.Add(time.Duration(i) * time.Hour)
+			key := hour.Format(time.RFC3339)
+			aggregate := hourly[key]
+			out.Series = append(out.Series, DailyPoint{
+				Date:      key,
+				Label:     hour.Format("15:00"),
+				Aggregate: aggregate,
+			})
+		}
+	} else {
+		for i := 0; i < windowDays; i++ {
+			day := start.AddDate(0, 0, i)
+			key := day.Format("2006-01-02")
+			aggregate := Aggregate{}
+			if entry != nil {
+				aggregate = entry.daily[key]
+			}
+			out.Totals.add(aggregate)
+			out.Series = append(out.Series, DailyPoint{
+				Date:      key,
+				Aggregate: aggregate,
+			})
+		}
 	}
 
 	if entry == nil {
 		return out
+	}
+	if windowDays == 1 {
+		if aggregate, ok := entry.daily[today.Format("2006-01-02")]; ok {
+			out.Totals.add(aggregate)
+		}
 	}
 	if !entry.lastUpdated.IsZero() {
 		updated := entry.lastUpdated
@@ -612,6 +684,9 @@ func (s *Store) Analytics(period string, now time.Time) AnalyticsSnapshot {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	if out, ok := s.analyticsFromRepository(period, now); ok {
+		return out
+	}
 	window := normalizeAnalyticsPeriod(period, now)
 
 	s.mu.Lock()
@@ -623,6 +698,7 @@ func (s *Store) Analytics(period string, now time.Time) AnalyticsSnapshot {
 		Period:                 window.period,
 		UsageStatisticsEnabled: s.enabled.Load(),
 		RetentionDays:          retentionDays,
+		PreviousTotals:         s.analyticsTotalsLocked(window.previous()),
 		Series:                 make([]ChartPoint, 0, window.bucketCount),
 		ActiveRequests:         s.activeRequestsLocked(now),
 		RecentRequests:         s.recentRequestsLocked(window),
@@ -640,6 +716,30 @@ func (s *Store) Analytics(period string, now time.Time) AnalyticsSnapshot {
 	return out
 }
 
+func (s *Store) analyticsTotalsLocked(window analyticsPeriod) Aggregate {
+	var total Aggregate
+	if s == nil || window.empty {
+		return total
+	}
+	if window.hourly {
+		for _, request := range s.recent {
+			if window.includesTime(request.Time) {
+				total.add(aggregateFromRequest(request))
+			}
+		}
+		return total
+	}
+	for _, day := range sortedDayKeys(s.daily) {
+		if !window.includesDay(day) {
+			continue
+		}
+		if daily := s.daily[day]; daily != nil {
+			total.add(daily.Aggregate)
+		}
+	}
+	return total
+}
+
 func (s *Store) RequestDetails(filter RequestDetailsFilter, now time.Time) RequestDetailsSnapshot {
 	if s == nil {
 		return RequestDetailsSnapshot{}
@@ -648,6 +748,9 @@ func (s *Store) RequestDetails(filter RequestDetailsFilter, now time.Time) Reque
 		now = time.Now()
 	}
 	filter.normalize()
+	if out, ok := s.requestDetailsFromRepository(filter, now); ok {
+		return out
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -714,9 +817,7 @@ func (s *Store) analyticsFromDailyLocked(out AnalyticsSnapshot, window analytics
 		}
 		out.Totals.add(daily.Aggregate)
 		if bucket := buckets[day]; bucket != nil {
-			bucket.Requests += daily.Requests
-			bucket.Tokens += daily.Tokens.TotalTokens
-			bucket.CostUSD += daily.CostUSD
+			bucket.addAggregate(daily.Aggregate)
 		}
 		mergeGroupMap(providers, daily.ByProvider)
 		mergeGroupMap(models, daily.ByModel)
@@ -753,9 +854,7 @@ func (s *Store) analyticsFromRecentLocked(out AnalyticsSnapshot, window analytic
 		aggregate := aggregateFromRequest(request)
 		out.Totals.add(aggregate)
 		if bucket := window.bucketFor(request.Time, buckets); bucket != nil {
-			bucket.Requests += 1
-			bucket.Tokens += request.TotalTokens
-			bucket.CostUSD += request.CostUSD
+			bucket.addAggregate(aggregate)
 		}
 		addRequestGroup(providers, providerGroupKey(request), request, aggregate)
 		addRequestGroup(models, modelGroupKey(request), request, aggregate)
@@ -821,6 +920,12 @@ func (s *Store) pruneLocked(now time.Time) {
 				delete(entry.daily, day)
 			}
 		}
+		for hour := range entry.hourly {
+			parsed, err := time.Parse(time.RFC3339, hour)
+			if err != nil || parsed.Before(cutoff) {
+				delete(entry.hourly, hour)
+			}
+		}
 		recent := entry.recent[:0]
 		for _, request := range entry.recent {
 			if !request.Time.Before(cutoff.UTC()) {
@@ -828,7 +933,7 @@ func (s *Store) pruneLocked(now time.Time) {
 			}
 		}
 		entry.recent = recent
-		if len(entry.daily) == 0 && len(entry.recent) == 0 {
+		if len(entry.daily) == 0 && len(entry.hourly) == 0 && len(entry.recent) == 0 {
 			delete(s.byKey, key)
 		}
 	}
@@ -1342,6 +1447,17 @@ func requestFromRecord(ctx context.Context, record coreusage.Record) (RecentRequ
 	return request, aggregate
 }
 
+// EstimateRecordCostUSD returns the same estimated USD cost used by usage analytics.
+func EstimateRecordCostUSD(record coreusage.Record) float64 {
+	tokens := normalizeTokens(record.Detail)
+	return estimateCostUSD(record.Provider, record.Model, tokens)
+}
+
+// RecordTotalTokens returns the normalized total-token count used by usage analytics.
+func RecordTotalTokens(record coreusage.Record) int64 {
+	return normalizeTokens(record.Detail).TotalTokens
+}
+
 func aggregateFromRequest(request RecentRequest) Aggregate {
 	tokens := tokenUsage{
 		InputTokens:     request.InputTokens,
@@ -1504,6 +1620,22 @@ func (a *Aggregate) add(other Aggregate) {
 	a.CostUSD += other.CostUSD
 }
 
+func (p *ChartPoint) addAggregate(aggregate Aggregate) {
+	if p == nil {
+		return
+	}
+	p.Requests += aggregate.Requests
+	p.Tokens += aggregate.Tokens.TotalTokens
+	p.Breakdown.InputTokens += aggregate.Tokens.InputTokens
+	p.Breakdown.OutputTokens += aggregate.Tokens.OutputTokens
+	p.Breakdown.ReasoningTokens += aggregate.Tokens.ReasoningTokens
+	p.Breakdown.CachedTokens += aggregate.Tokens.CachedTokens
+	p.Breakdown.CacheReadTokens += aggregate.Tokens.CacheReadTokens
+	p.Breakdown.CacheCreationTokens += aggregate.Tokens.CacheCreationTokens
+	p.Breakdown.TotalTokens += aggregate.Tokens.TotalTokens
+	p.CostUSD += aggregate.CostUSD
+}
+
 func normalizeWindowDays(days int) int {
 	switch days {
 	case 1, 7, 30, 60:
@@ -1520,6 +1652,7 @@ type analyticsPeriod struct {
 	hourly      bool
 	bucketCount int
 	days        []string
+	empty       bool
 }
 
 func normalizeAnalyticsPeriod(period string, now time.Time) analyticsPeriod {
@@ -1558,6 +1691,43 @@ func normalizeAnalyticsPeriod(period string, now time.Time) analyticsPeriod {
 		return analyticsPeriod{period: period, start: start.UTC(), end: end, bucketCount: retentionDays, days: dayKeys}
 	default:
 		return normalizeAnalyticsPeriod("today", now)
+	}
+}
+
+func (w analyticsPeriod) previous() analyticsPeriod {
+	if w.period == "" || w.period == "all" {
+		return analyticsPeriod{period: w.period, empty: true}
+	}
+	if w.hourly {
+		duration := w.end.Sub(w.start)
+		if duration <= 0 {
+			return analyticsPeriod{period: w.period, empty: true}
+		}
+		previousEnd := w.start
+		return analyticsPeriod{
+			period:      w.period,
+			start:       previousEnd.Add(-duration),
+			end:         previousEnd,
+			hourly:      true,
+			bucketCount: w.bucketCount,
+		}
+	}
+	days := len(w.days)
+	if days <= 0 {
+		return analyticsPeriod{period: w.period, empty: true}
+	}
+	startLocal := w.start.In(time.Local)
+	previousStart := startLocal.AddDate(0, 0, -days)
+	previousDays := make([]string, 0, days)
+	for i := 0; i < days; i++ {
+		previousDays = append(previousDays, previousStart.AddDate(0, 0, i).Format("2006-01-02"))
+	}
+	return analyticsPeriod{
+		period:      w.period,
+		start:       previousStart.UTC(),
+		end:         w.start,
+		bucketCount: days,
+		days:        previousDays,
 	}
 }
 
@@ -1635,9 +1805,18 @@ func localDay(t time.Time) string {
 	return startOfLocalDay(t).Format("2006-01-02")
 }
 
+func localHour(t time.Time) string {
+	return startOfLocalHour(t).Format(time.RFC3339)
+}
+
 func startOfLocalDay(t time.Time) time.Time {
 	local := t.In(time.Local)
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+}
+
+func startOfLocalHour(t time.Time) time.Time {
+	local := t.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, time.Local)
 }
 
 func cleanText(value string, fallback string) string {

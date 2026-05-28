@@ -41,6 +41,23 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional per-key metadata used by the Management Center API Keys page.
+# Keys are stored by sha256 hash of the API key value; the UI manages this automatically.
+# Runtime auth enforces disabled, revoked, expires-at, and ip-allowlist.
+# api-key-metadata:
+#   sha256:<hash-of-your-api-key-1>:
+#     name: "Production app"
+#     owner: "platform"
+#     environment: "prod"
+#     scopes: ["chat", "responses"]
+#     allowed-providers: ["openai", "claude"]
+#     allowed-models: ["gpt-5", "claude-sonnet"]
+#     ip-allowlist: ["127.0.0.1", "10.0.0.0/8"]
+#     expires-at: "2026-12-31T23:59:59Z"
+#     daily-token-limit: 1000000
+#     monthly-budget-usd: 250
+#     tags: ["customer-facing", "high-priority"]
+
 # Enable debug logging
 debug: false
 
@@ -63,8 +80,20 @@ logs-max-total-size-mb: 0
 # When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 error-logs-max-files: 10
 
-# When false, disable in-memory usage statistics aggregation
+# When false, disable usage statistics aggregation and persistence.
 usage-statistics-enabled: false
+
+# Optional persistent usage analytics store. Memory is the default. Use postgres
+# when Management Center Usage & Analytics should survive process restarts.
+usage-store:
+  type: memory # memory or postgres
+  dsn: "" # e.g. postgresql://user:pass@localhost:5432/cliproxy
+  schema: ""
+  events-table: usage_events
+  hourly-rollup-table: usage_rollups_hourly
+  daily-rollup-table: usage_rollups_daily
+  rollups-enabled: true
+  rollup-query-min-events: 50000
 
 usage-quota-rules: [] # usage quota rules are disabled by default; uncomment and configure the example below to enable
 # Examples 01:

@@ -74,7 +74,9 @@ see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
 ## Usage Statistics
 
-CLIProxyAPI includes a read-only end-user usage portal at `/usage`. Users can paste an API key or open `/usage/<api-key>` to view token totals, request volume, a daily chart, and sanitized recent request metadata for that key. Usage aggregation is in memory and requires `usage-statistics-enabled: true`.
+CLIProxyAPI includes a read-only end-user usage portal at `/usage`. Users can paste an API key or open `/usage/<api-key>` to view token totals, request volume, an hourly chart for Today, daily charts for longer ranges, and sanitized recent request metadata for that key. Usage collection requires `usage-statistics-enabled: true`; it uses memory by default and can use the built-in `usage-store.type: postgres` backend for persistent Management Center analytics with event history and rollups.
+
+Operational note for this workspace: do not deploy, replace, restart, reload, or otherwise touch the running production `cli-proxy-api` process unless the user explicitly asks for that action. Build and test artifacts can be prepared separately and verified with read-only checks.
 
 For persistent storage, longer history, pricing customization, or richer operations, use:
 

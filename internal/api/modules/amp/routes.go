@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -238,6 +239,12 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 	geminiV1Beta1Fallback := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
 		return m.getProxy()
 	}, m.modelMapper, m.forceModelMappings)
+	geminiV1Beta1Fallback.SetConfigProvider(func() *sdkconfig.SDKConfig {
+		if baseHandler == nil {
+			return nil
+		}
+		return baseHandler.Cfg
+	})
 	geminiV1Beta1Handler := geminiV1Beta1Fallback.WrapHandler(geminiBridge)
 
 	// Route POST model calls through Gemini bridge with FallbackHandler.
@@ -276,6 +283,12 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
 	fallbackHandler := NewFallbackHandlerWithMapper(func() *httputil.ReverseProxy {
 		return m.getProxy()
 	}, m.modelMapper, m.forceModelMappings)
+	fallbackHandler.SetConfigProvider(func() *sdkconfig.SDKConfig {
+		if baseHandler == nil {
+			return nil
+		}
+		return baseHandler.Cfg
+	})
 
 	// Provider-specific routes under /api/provider/:provider
 	ampProviders := engine.Group("/api/provider")

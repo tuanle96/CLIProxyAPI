@@ -66,8 +66,11 @@ type Config struct {
 	// When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 	ErrorLogsMaxFiles int `yaml:"error-logs-max-files" json:"error-logs-max-files"`
 
-	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
+	// UsageStatisticsEnabled toggles usage aggregation/persistence; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
+
+	// UsageStore configures optional persistent storage for usage analytics.
+	UsageStore UsageStoreConfig `yaml:"usage-store" json:"usage-store"`
 
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
@@ -188,6 +191,51 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+}
+
+type UsageStoreConfig struct {
+	Type                 string `yaml:"type" json:"type"`
+	DSN                  string `yaml:"dsn" json:"-"`
+	Schema               string `yaml:"schema" json:"schema,omitempty"`
+	EventsTable          string `yaml:"events-table" json:"events-table"`
+	HourlyRollupTable    string `yaml:"hourly-rollup-table" json:"hourly-rollup-table"`
+	DailyRollupTable     string `yaml:"daily-rollup-table" json:"daily-rollup-table"`
+	RollupsEnabled       bool   `yaml:"rollups-enabled" json:"rollups-enabled"`
+	RollupQueryMinEvents int64  `yaml:"rollup-query-min-events" json:"rollup-query-min-events"`
+}
+
+func (c *UsageStoreConfig) ApplyDefaults() {
+	if c == nil {
+		return
+	}
+	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
+	if c.Type == "" {
+		c.Type = "memory"
+	}
+	c.DSN = strings.TrimSpace(c.DSN)
+	c.Schema = strings.TrimSpace(c.Schema)
+	c.EventsTable = strings.TrimSpace(c.EventsTable)
+	if c.EventsTable == "" {
+		c.EventsTable = "usage_events"
+	}
+	c.HourlyRollupTable = strings.TrimSpace(c.HourlyRollupTable)
+	if c.HourlyRollupTable == "" {
+		c.HourlyRollupTable = "usage_rollups_hourly"
+	}
+	c.DailyRollupTable = strings.TrimSpace(c.DailyRollupTable)
+	if c.DailyRollupTable == "" {
+		c.DailyRollupTable = "usage_rollups_daily"
+	}
+	if c.RollupQueryMinEvents < 0 {
+		c.RollupQueryMinEvents = 0
+	}
+	if c.RollupQueryMinEvents == 0 {
+		c.RollupQueryMinEvents = 50000
+	}
+}
+
+func (c UsageStoreConfig) PostgresEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Type), "postgres") && strings.TrimSpace(c.DSN) != ""
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -637,6 +685,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageStore.RollupsEnabled = true
+	cfg.UsageStore.ApplyDefaults()
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.DisableImageGeneration = DisableImageGenerationOff
@@ -652,6 +702,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	cfg.UsageStore.ApplyDefaults()
 
 	// NOTE: Startup legacy key migration is intentionally disabled.
 	// Reason: avoid mutating config.yaml during server startup.
@@ -741,6 +792,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeAPIKeyMetadata()
 
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.

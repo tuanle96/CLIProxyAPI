@@ -77,6 +77,9 @@ func TestUsagePortalDataValidatesAPIKey(t *testing.T) {
 			Active                 bool `json:"active"`
 			WindowDays             int  `json:"window_days"`
 			UsageStatisticsEnabled bool `json:"usage_statistics_enabled"`
+			Series                 []struct {
+				Label string `json:"label"`
+			} `json:"series"`
 		}
 		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("unmarshal response: %v body=%s", err, rr.Body.String())
@@ -89,6 +92,30 @@ func TestUsagePortalDataValidatesAPIKey(t *testing.T) {
 		}
 		if payload.UsageStatisticsEnabled {
 			t.Fatalf("test server should have usage statistics disabled")
+		}
+	})
+
+	t.Run("today returns hourly series", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/usage/test-key/data?window=1d", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		var payload struct {
+			Series []struct {
+				Label string `json:"label"`
+			} `json:"series"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("unmarshal response: %v body=%s", err, rr.Body.String())
+		}
+		if len(payload.Series) != 24 {
+			t.Fatalf("today series = %d buckets, want 24", len(payload.Series))
+		}
+		if payload.Series[0].Label != "00:00" || payload.Series[23].Label != "23:00" {
+			t.Fatalf("today labels = %q/%q, want 00:00/23:00", payload.Series[0].Label, payload.Series[23].Label)
 		}
 	})
 
@@ -115,7 +142,11 @@ func containsAll(value string, parts ...string) bool {
 func writeTestManagementAsset(t *testing.T, server *Server, body string) {
 	t.Helper()
 
+	t.Setenv("MANAGEMENT_STATIC_PATH", t.TempDir())
 	path := managementasset.FilePath(server.configFilePath)
+	if path == "" {
+		t.Fatal("management asset path is empty")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("create management asset dir: %v", err)
 	}

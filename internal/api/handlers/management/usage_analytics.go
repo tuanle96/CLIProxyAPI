@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usageportal"
 )
 
@@ -35,7 +37,9 @@ func (h *Handler) GetUsageAnalyticsStats(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid period"})
 		return
 	}
-	c.JSON(http.StatusOK, usageportal.Analytics(period, time.Now()))
+	snapshot := usageportal.Analytics(period, time.Now())
+	h.decorateUsageAnalyticsSnapshot(&snapshot)
+	c.JSON(http.StatusOK, snapshot)
 }
 
 func (h *Handler) GetUsageAnalyticsChart(c *gin.Context) {
@@ -49,12 +53,14 @@ func (h *Handler) GetUsageAnalyticsChart(c *gin.Context) {
 }
 
 func (h *Handler) GetUsageAnalyticsRequestDetails(c *gin.Context) {
-	filter, err := parseUsageAnalyticsRequestDetailsFilter(c)
+	filter, err := h.parseUsageAnalyticsRequestDetailsFilter(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, usageportal.RequestDetails(filter, time.Now()))
+	snapshot := usageportal.RequestDetails(filter, time.Now())
+	h.decorateUsageAnalyticsRequestDetails(&snapshot)
+	c.JSON(http.StatusOK, snapshot)
 }
 
 func (h *Handler) GetUsageAnalyticsProviders(c *gin.Context) {
@@ -64,6 +70,7 @@ func (h *Handler) GetUsageAnalyticsProviders(c *gin.Context) {
 		return
 	}
 	snapshot := usageportal.Analytics(period, time.Now())
+	h.decorateUsageAnalyticsSnapshot(&snapshot)
 	providers := make([]gin.H, 0, len(snapshot.ByProvider))
 	for _, group := range snapshot.ByProvider {
 		providers = append(providers, gin.H{
@@ -90,6 +97,7 @@ func (h *Handler) GetUsageAnalyticsProviderBreakdown(c *gin.Context) {
 	}
 	providerFilter := strings.TrimSpace(c.Query("provider"))
 	snapshot := usageportal.Analytics(period, time.Now())
+	h.decorateUsageAnalyticsSnapshot(&snapshot)
 
 	providers := make([]gin.H, 0, len(snapshot.ByProvider))
 	totals := gin.H{
@@ -152,17 +160,27 @@ func (h *Handler) GetUsageAnalyticsAPIKey(c *gin.Context) {
 	}
 	windowDays := usageAnalyticsWindowDays(period)
 	snapshot := usageportal.SnapshotForKey(apiKey, windowDays, true, time.Now())
+	h.decorateUsageAnalyticsKeySnapshot(&snapshot, apiKey)
+	identity := h.usageAnalyticsAPIKeyIndex().identityForAPIKey(apiKey)
+	meta := config.APIKeyMetadata{}
+	if h.cfg != nil {
+		meta = config.NormalizeAPIKeyMetadata(h.cfg.APIKeyMetadata[config.APIKeyID(apiKey)])
+	}
+	quotaStatus, _ := apikeypolicy.StatusForAPIKey(apiKey, meta, time.Now())
 	c.JSON(http.StatusOK, gin.H{
 		"key": gin.H{
-			"id":     c.Param("id"),
-			"name":   snapshot.KeyLabel,
-			"active": true,
+			"id":                  c.Param("id"),
+			"name":                snapshot.KeyLabel,
+			"api_key_name":        identity.Name,
+			"api_key_fingerprint": identity.Fingerprint,
+			"display_label":       identity.DisplayLabel,
+			"active":              true,
 		},
 		"period":   period,
 		"stats":    snapshot.Totals,
 		"chart":    snapshot.Series,
 		"requests": snapshot.RecentRequests,
-		"quotas":   []gin.H{},
+		"quotas":   []apikeypolicy.QuotaStatus{quotaStatus},
 	})
 }
 
@@ -185,7 +203,9 @@ func (h *Handler) StreamUsageAnalytics(c *gin.Context) {
 	c.Status(http.StatusOK)
 
 	sendSnapshot := func() bool {
-		raw, err := json.Marshal(usageportal.Analytics(period, time.Now()))
+		snapshot := usageportal.Analytics(period, time.Now())
+		h.decorateUsageAnalyticsSnapshot(&snapshot)
+		raw, err := json.Marshal(snapshot)
 		if err != nil {
 			return false
 		}
@@ -249,7 +269,7 @@ func usageAnalyticsAccountsForProvider(accounts []usageportal.AnalyticsGroup, pr
 	return out
 }
 
-func parseUsageAnalyticsRequestDetailsFilter(c *gin.Context) (usageportal.RequestDetailsFilter, error) {
+func (h *Handler) parseUsageAnalyticsRequestDetailsFilter(c *gin.Context) (usageportal.RequestDetailsFilter, error) {
 	page, err := parsePositiveQueryInt(c, "page", 1, 0)
 	if err != nil {
 		return usageportal.RequestDetailsFilter{}, err
@@ -277,12 +297,204 @@ func parseUsageAnalyticsRequestDetailsFilter(c *gin.Context) (usageportal.Reques
 		PageSize:  pageSize,
 		Provider:  c.Query("provider"),
 		Model:     c.Query("model"),
-		APIKey:    firstNonEmpty(c.Query("api_key"), c.Query("apiKey")),
+		APIKey:    h.resolveUsageAnalyticsAPIKeyFilter(firstNonEmpty(c.Query("api_key"), c.Query("apiKey"))),
 		Endpoint:  c.Query("endpoint"),
 		Status:    c.Query("status"),
 		StartTime: start,
 		EndTime:   end,
 	}, nil
+}
+
+type usageAnalyticsAPIKeyIdentity struct {
+	Name         string
+	Fingerprint  string
+	DisplayLabel string
+}
+
+type usageAnalyticsAPIKeyIndex struct {
+	byFingerprint map[string]usageAnalyticsAPIKeyIdentity
+	byName        map[string][]usageAnalyticsAPIKeyIdentity
+}
+
+func (h *Handler) usageAnalyticsAPIKeyIndex() usageAnalyticsAPIKeyIndex {
+	index := usageAnalyticsAPIKeyIndex{
+		byFingerprint: make(map[string]usageAnalyticsAPIKeyIdentity),
+		byName:        make(map[string][]usageAnalyticsAPIKeyIdentity),
+	}
+	if h == nil {
+		return index
+	}
+	h.mu.Lock()
+	cfg := h.cfg
+	keys := []string(nil)
+	metadata := map[string]config.APIKeyMetadata(nil)
+	if cfg != nil {
+		keys = append(keys, cfg.APIKeys...)
+		if len(cfg.APIKeyMetadata) > 0 {
+			metadata = make(map[string]config.APIKeyMetadata, len(cfg.APIKeyMetadata))
+			for key, value := range cfg.APIKeyMetadata {
+				metadata[key] = value
+			}
+		}
+	}
+	h.mu.Unlock()
+	if cfg == nil {
+		return index
+	}
+	for _, apiKey := range keys {
+		apiKey = strings.TrimSpace(apiKey)
+		if apiKey == "" {
+			continue
+		}
+		identity := index.identityForConfiguredAPIKey(apiKey, metadata)
+		if identity.Fingerprint == "" {
+			continue
+		}
+		index.byFingerprint[strings.ToLower(identity.Fingerprint)] = identity
+		if identity.Name != "" {
+			nameKey := strings.ToLower(identity.Name)
+			index.byName[nameKey] = append(index.byName[nameKey], identity)
+		}
+	}
+	return index
+}
+
+func (idx usageAnalyticsAPIKeyIndex) identityForConfiguredAPIKey(apiKey string, metadata map[string]config.APIKeyMetadata) usageAnalyticsAPIKeyIdentity {
+	fingerprint := config.MaskAPIKey(apiKey)
+	meta := config.NormalizeAPIKeyMetadata(metadata[config.APIKeyID(apiKey)])
+	displayLabel := fingerprint
+	if meta.Name != "" {
+		displayLabel = meta.Name
+	}
+	return usageAnalyticsAPIKeyIdentity{
+		Name:         meta.Name,
+		Fingerprint:  fingerprint,
+		DisplayLabel: displayLabel,
+	}
+}
+
+func (idx usageAnalyticsAPIKeyIndex) identityForAPIKey(apiKey string) usageAnalyticsAPIKeyIdentity {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return usageAnalyticsAPIKeyIdentity{}
+	}
+	fingerprint := config.MaskAPIKey(apiKey)
+	if identity, ok := idx.byFingerprint[strings.ToLower(fingerprint)]; ok {
+		return identity
+	}
+	return usageAnalyticsAPIKeyIdentity{
+		Fingerprint:  fingerprint,
+		DisplayLabel: fingerprint,
+	}
+}
+
+func (idx usageAnalyticsAPIKeyIndex) identityForLabel(label string) usageAnalyticsAPIKeyIdentity {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return usageAnalyticsAPIKeyIdentity{}
+	}
+	if identity, ok := idx.byFingerprint[strings.ToLower(label)]; ok {
+		return identity
+	}
+	return usageAnalyticsAPIKeyIdentity{
+		Fingerprint:  label,
+		DisplayLabel: label,
+	}
+}
+
+func (idx usageAnalyticsAPIKeyIndex) resolveFilter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if identity, ok := idx.byFingerprint[strings.ToLower(value)]; ok {
+		return identity.Fingerprint
+	}
+	matches := idx.byName[strings.ToLower(value)]
+	if len(matches) == 1 {
+		return matches[0].Fingerprint
+	}
+	return value
+}
+
+func (h *Handler) resolveUsageAnalyticsAPIKeyFilter(value string) string {
+	return h.usageAnalyticsAPIKeyIndex().resolveFilter(value)
+}
+
+func (h *Handler) decorateUsageAnalyticsSnapshot(snapshot *usageportal.AnalyticsSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	index := h.usageAnalyticsAPIKeyIndex()
+	for i := range snapshot.ByAPIKey {
+		applyUsageAnalyticsIdentityToGroup(&snapshot.ByAPIKey[i], index.identityForLabel(snapshot.ByAPIKey[i].APIKeyLabel))
+	}
+	for i := range snapshot.RecentRequests {
+		applyUsageAnalyticsIdentityToRecentRequest(&snapshot.RecentRequests[i], index.identityForLabel(snapshot.RecentRequests[i].APIKeyLabel))
+	}
+	for i := range snapshot.ActiveRequests {
+		applyUsageAnalyticsIdentityToActiveRequest(&snapshot.ActiveRequests[i], index.identityForLabel(snapshot.ActiveRequests[i].APIKeyLabel))
+	}
+}
+
+func (h *Handler) decorateUsageAnalyticsKeySnapshot(snapshot *usageportal.Snapshot, apiKey string) {
+	if snapshot == nil {
+		return
+	}
+	index := h.usageAnalyticsAPIKeyIndex()
+	identity := index.identityForAPIKey(apiKey)
+	if identity.Fingerprint != "" {
+		snapshot.KeyLabel = identity.DisplayLabel
+	}
+	for i := range snapshot.RecentRequests {
+		applyUsageAnalyticsIdentityToRecentRequest(&snapshot.RecentRequests[i], index.identityForLabel(snapshot.RecentRequests[i].APIKeyLabel))
+	}
+}
+
+func (h *Handler) decorateUsageAnalyticsRequestDetails(snapshot *usageportal.RequestDetailsSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	index := h.usageAnalyticsAPIKeyIndex()
+	for i := range snapshot.Details {
+		applyUsageAnalyticsIdentityToRequestDetail(&snapshot.Details[i], index.identityForLabel(snapshot.Details[i].APIKeyLabel))
+	}
+}
+
+func applyUsageAnalyticsIdentityToGroup(group *usageportal.AnalyticsGroup, identity usageAnalyticsAPIKeyIdentity) {
+	if group == nil || identity.Fingerprint == "" {
+		return
+	}
+	group.APIKeyName = identity.Name
+	group.APIKeyFingerprint = identity.Fingerprint
+	group.APIKeyDisplayLabel = identity.DisplayLabel
+}
+
+func applyUsageAnalyticsIdentityToRecentRequest(request *usageportal.RecentRequest, identity usageAnalyticsAPIKeyIdentity) {
+	if request == nil || identity.Fingerprint == "" {
+		return
+	}
+	request.APIKeyName = identity.Name
+	request.APIKeyFingerprint = identity.Fingerprint
+	request.APIKeyDisplayLabel = identity.DisplayLabel
+}
+
+func applyUsageAnalyticsIdentityToActiveRequest(request *usageportal.ActiveRequest, identity usageAnalyticsAPIKeyIdentity) {
+	if request == nil || identity.Fingerprint == "" {
+		return
+	}
+	request.APIKeyName = identity.Name
+	request.APIKeyFingerprint = identity.Fingerprint
+	request.APIKeyDisplayLabel = identity.DisplayLabel
+}
+
+func applyUsageAnalyticsIdentityToRequestDetail(detail *usageportal.RequestDetail, identity usageAnalyticsAPIKeyIdentity) {
+	if detail == nil || identity.Fingerprint == "" {
+		return
+	}
+	detail.APIKeyName = identity.Name
+	detail.APIKeyFingerprint = identity.Fingerprint
+	detail.APIKeyDisplayLabel = identity.DisplayLabel
 }
 
 func parseUsageAnalyticsPeriod(value string, valid map[string]struct{}, fallback string) (string, bool) {

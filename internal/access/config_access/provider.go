@@ -2,9 +2,13 @@ package configaccess
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
+	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -24,23 +28,24 @@ func Register(cfg *sdkconfig.SDKConfig) {
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keys, cfg.APIKeyMetadata),
 	)
 }
 
 type provider struct {
 	name string
-	keys map[string]struct{}
+	keys map[string]internalconfig.APIKeyMetadata
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keys []string, metadata map[string]internalconfig.APIKeyMetadata) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	keySet := make(map[string]struct{}, len(keys))
+	keySet := make(map[string]internalconfig.APIKeyMetadata, len(keys))
 	for _, key := range keys {
-		keySet[key] = struct{}{}
+		meta := internalconfig.NormalizeAPIKeyMetadata(metadata[internalconfig.APIKeyID(key)])
+		keySet[key] = meta
 	}
 	return &provider{name: providerName, keys: keySet}
 }
@@ -89,18 +94,64 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		if meta, ok := p.keys[candidate.value]; ok {
+			status, reason := meta.EffectiveStatus(time.Now())
+			if status != internalconfig.APIKeyStatusActive {
+				return nil, sdkaccess.NewForbiddenCredentialError(reason)
+			}
+			if len(meta.IPAllowlist) > 0 && !requestIPAllowed(r, meta.IPAllowlist) {
+				return nil, sdkaccess.NewForbiddenCredentialError("API key is not allowed from this IP")
+			}
+			keyID := internalconfig.APIKeyID(candidate.value)
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
 				Metadata: map[string]string{
-					"source": candidate.source,
+					"source":      candidate.source,
+					"api_key_id":  keyID,
+					"name":        meta.Name,
+					"owner":       meta.Owner,
+					"environment": meta.Environment,
 				},
 			}, nil
 		}
 	}
 
 	return nil, sdkaccess.NewInvalidCredentialError()
+}
+
+func requestIPAllowed(r *http.Request, allowlist []string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	addr := ""
+	if r != nil {
+		addr = strings.TrimSpace(r.RemoteAddr)
+	}
+	if addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err == nil {
+		addr = host
+	}
+	ip, err := netip.ParseAddr(strings.Trim(addr, "[]"))
+	if err != nil {
+		return false
+	}
+	for _, entry := range allowlist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil && prefix.Contains(ip) {
+			return true
+		}
+		if allowedIP, err := netip.ParseAddr(entry); err == nil && allowedIP == ip {
+			return true
+		}
+	}
+	return false
 }
 
 func extractBearerToken(header string) string {

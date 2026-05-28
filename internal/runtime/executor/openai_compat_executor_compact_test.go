@@ -106,6 +106,42 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorPreservesReasoningContentBeforeUpstream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"deepseek-v4-pro","messages":[
+		{"role":"assistant","content":"plan","reasoning_content":"real reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"ok"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"call_2","type":"function","function":{"name":"write","arguments":"{}"}}]}
+	]}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-pro",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.2.reasoning_content").String(); got != "real reasoning" {
+		t.Fatalf("messages.2.reasoning_content = %q, want real reasoning; body=%s", got, string(gotBody))
+	}
+}
+
 func TestOpenAICompatExecutorImagesGenerationsPassthrough(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

@@ -140,9 +140,10 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, requestRawJSON []byte
 	outputItems := make([]completedOutputItem, 0, len(st.Reasonings)+len(st.MsgItemAdded)+len(st.FuncArgsBuf))
 	if len(st.Reasonings) > 0 {
 		for _, r := range st.Reasonings {
-			item := []byte(`{"id":"","type":"reasoning","summary":[{"type":"summary_text","text":""}]}`)
+			item := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}`)
 			item, _ = sjson.SetBytes(item, "id", r.ReasoningID)
 			item, _ = sjson.SetBytes(item, "summary.0.text", r.ReasoningData)
+			item, _ = sjson.SetBytes(item, "encrypted_content", r.ReasoningData)
 			outputItems = append(outputItems, completedOutputItem{index: r.OutputIndex, raw: item})
 		}
 	}
@@ -341,7 +342,8 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		outputItemDone, _ = sjson.SetBytes(outputItemDone, "sequence_number", nextSeq())
 		outputItemDone, _ = sjson.SetBytes(outputItemDone, "item.id", st.ReasoningID)
 		outputItemDone, _ = sjson.SetBytes(outputItemDone, "output_index", st.ReasoningIndex)
-		outputItemDone, _ = sjson.SetBytes(outputItemDone, "item.summary.text", text)
+		outputItemDone, _ = sjson.SetBytes(outputItemDone, "item.summary.0.text", text)
+		outputItemDone, _ = sjson.SetBytes(outputItemDone, "item.encrypted_content", text)
 		out = append(out, emitRespEvent("response.output_item.done", outputItemDone))
 
 		st.Reasonings = append(st.Reasonings, oaiToResponsesStateReasoning{ReasoningID: st.ReasoningID, ReasoningData: text, OutputIndex: st.ReasoningIndex})
@@ -728,12 +730,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 		if strings.HasPrefix(rid, "resp_") {
 			rid = strings.TrimPrefix(rid, "resp_")
 		}
-		// Prefer summary_text from reasoning_content; encrypted_content is optional
+		// Fill encrypted_content too so Codex can carry this value into the next request.
 		reasoningItem := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[]}`)
 		reasoningItem, _ = sjson.SetBytes(reasoningItem, "id", fmt.Sprintf("rs_%s", rid))
 		if rcText != "" {
 			reasoningItem, _ = sjson.SetBytes(reasoningItem, "summary.0.type", "summary_text")
 			reasoningItem, _ = sjson.SetBytes(reasoningItem, "summary.0.text", rcText)
+			reasoningItem, _ = sjson.SetBytes(reasoningItem, "encrypted_content", rcText)
 		}
 		outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", reasoningItem)
 	}

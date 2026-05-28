@@ -2,14 +2,19 @@ package amp
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httputil"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeypolicy"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -81,6 +86,7 @@ type FallbackHandler struct {
 	getProxy           func() *httputil.ReverseProxy
 	modelMapper        ModelMapper
 	forceModelMappings func() bool
+	cfgProvider        func() *sdkconfig.SDKConfig
 }
 
 // NewFallbackHandler creates a new fallback handler wrapper
@@ -107,6 +113,10 @@ func NewFallbackHandlerWithMapper(getProxy func() *httputil.ReverseProxy, mapper
 // SetModelMapper sets the model mapper for this handler (allows late binding)
 func (fh *FallbackHandler) SetModelMapper(mapper ModelMapper) {
 	fh.modelMapper = mapper
+}
+
+func (fh *FallbackHandler) SetConfigProvider(provider func() *sdkconfig.SDKConfig) {
+	fh.cfgProvider = provider
 }
 
 // WrapHandler wraps a gin.HandlerFunc with fallback logic
@@ -224,6 +234,17 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		}
 
 		// If no providers available, fallback to ampcode.com
+		if fh.cfgProvider != nil {
+			apiKey := apiKeyFromGin(c)
+			filtered, errMsg := apikeypolicy.CheckRequest(fh.cfgProvider(), apiKey, "amp", providers, modelName, resolvedModel, time.Now())
+			if errMsg != nil {
+				writeAmpPolicyError(c, errMsg)
+				return
+			}
+			providers = filtered
+		}
+
+		// If no providers available, fallback to ampcode.com
 		if len(providers) == 0 {
 			proxy := fh.getProxy()
 			if proxy != nil {
@@ -281,6 +302,37 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 			handler(c)
 		}
 	}
+}
+
+func apiKeyFromGin(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if raw, exists := c.Get("userApiKey"); exists {
+		switch value := raw.(type) {
+		case string:
+			return strings.TrimSpace(value)
+		case []byte:
+			return strings.TrimSpace(string(value))
+		}
+	}
+	return ""
+}
+
+func writeAmpPolicyError(c *gin.Context, errMsg *interfaces.ErrorMessage) {
+	status := http.StatusInternalServerError
+	if errMsg != nil && errMsg.StatusCode > 0 {
+		status = errMsg.StatusCode
+	}
+	body := []byte(http.StatusText(status))
+	if errMsg != nil && errMsg.Error != nil && strings.TrimSpace(errMsg.Error.Error()) != "" {
+		body = []byte(strings.TrimSpace(errMsg.Error.Error()))
+	}
+	if json.Valid(body) {
+		c.Data(status, "application/json", body)
+		return
+	}
+	c.JSON(status, gin.H{"error": string(body)})
 }
 
 // filterAntropicBetaHeader filters Anthropic-Beta header to remove features requiring special subscription

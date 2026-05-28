@@ -138,6 +138,71 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_ResponseCompleted
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_StreamReasoningCarriesEncryptedContent(t *testing.T) {
+	in := []string{
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":"think","tool_calls":null},"finish_reason":null}]}`,
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":" first","tool_calls":null},"finish_reason":null}]}`,
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":"answer","reasoning_content":null,"tool_calls":null},"finish_reason":null}]}`,
+		`data: {"id":"resp_reasoning","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+	request := []byte(`{"model":"gpt-5.4","reasoning":{"effort":"high"}}`)
+
+	var param any
+	var reasoningDone gjson.Result
+	var completed gjson.Result
+	for _, line := range in {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "model", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			switch event {
+			case "response.output_item.done":
+				if data.Get("item.type").String() == "reasoning" {
+					reasoningDone = data
+				}
+			case "response.completed":
+				completed = data
+			}
+		}
+	}
+
+	if !reasoningDone.Exists() {
+		t.Fatal("expected reasoning response.output_item.done event")
+	}
+	if got := reasoningDone.Get("item.summary.0.text").String(); got != "think first" {
+		t.Fatalf("summary text = %q, want think first; event=%s", got, reasoningDone.Raw)
+	}
+	if got := reasoningDone.Get("item.encrypted_content").String(); got != "think first" {
+		t.Fatalf("encrypted_content = %q, want think first; event=%s", got, reasoningDone.Raw)
+	}
+	if got := completed.Get("response.output.0.encrypted_content").String(); got != "think first" {
+		t.Fatalf("completed encrypted_content = %q, want think first; event=%s", got, completed.Raw)
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_ReasoningCarriesEncryptedContent(t *testing.T) {
+	request := []byte(`{"model":"gpt-5.4","reasoning":{"effort":"high"}}`)
+	raw := []byte(`{
+		"id":"chatcmpl_reasoning",
+		"object":"chat.completion",
+		"created":1773896263,
+		"model":"model",
+		"choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"nonstream thinking","content":"answer"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}
+	}`)
+
+	out := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "model", request, request, raw, nil)
+
+	if got := gjson.GetBytes(out, "output.0.type").String(); got != "reasoning" {
+		t.Fatalf("output.0.type = %q, want reasoning; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "output.0.summary.0.text").String(); got != "nonstream thinking" {
+		t.Fatalf("summary text = %q, want nonstream thinking", got)
+	}
+	if got := gjson.GetBytes(out, "output.0.encrypted_content").String(); got != "nonstream thinking" {
+		t.Fatalf("encrypted_content = %q, want nonstream thinking", got)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,

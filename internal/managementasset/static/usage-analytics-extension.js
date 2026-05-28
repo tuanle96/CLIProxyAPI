@@ -628,7 +628,7 @@
     link.insertAdjacentHTML('afterbegin', '<span class="cpa-usage-icon" aria-hidden="true">' + usageSidebarIconSVG() + '</span>');
   }
 
-  function updateUsageSidebarLabel(link) {
+    function updateUsageSidebarLabel(link) {
     var updated = false;
     Array.prototype.slice.call(link.childNodes).forEach(function (node) {
       if (node.nodeType === Node.TEXT_NODE && String(node.textContent || '').trim()) {
@@ -647,13 +647,37 @@
       var label = document.createElement('span');
       label.textContent = 'Usage & Analytics';
       link.appendChild(label);
+      }
     }
-  }
 
-  function injectSidebarLink() {
-    if (document.querySelector('[data-cpa-usage-nav="true"]')) return true;
-    var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
-    var template = anchors.find(function (anchor) {
+    function findNativeUsageSidebarLink(anchors) {
+      return anchors.find(function (anchor) {
+        var href = anchor.getAttribute('href') || '';
+        var text = anchor.textContent || '';
+        return /#\/usage-analytics\b/i.test(href) || /Usage\s*&\s*Analytics|用量分析/i.test(text);
+      });
+    }
+
+    function removeInjectedUsageSidebarLinks(nativeLink) {
+      document.querySelectorAll('[data-cpa-usage-nav="true"]').forEach(function (link) {
+        if (link === nativeLink) return;
+        var href = link.getAttribute('href') || '';
+        if (/#\/usage-analytics\b/i.test(href)) return;
+        var item = link.closest('li') || link;
+        if (item && item.parentNode) item.parentNode.removeChild(item);
+      });
+    }
+
+    function injectSidebarLink() {
+      var anchors = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
+      var nativeLink = findNativeUsageSidebarLink(anchors);
+      if (nativeLink) {
+        nativeLink.setAttribute('data-cpa-usage-nav', 'true');
+        removeInjectedUsageSidebarLinks(nativeLink);
+        return true;
+      }
+      if (document.querySelector('[data-cpa-usage-nav="true"]')) return true;
+      var template = anchors.find(function (anchor) {
       var href = anchor.getAttribute('href') || '';
       var text = anchor.textContent || '';
       return /#\/quota|\/quota\b/i.test(href) || /Quota|配额|配額/i.test(text);

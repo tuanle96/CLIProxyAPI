@@ -23,6 +23,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageStore.RollupsEnabled = true
+	cfg.UsageStore.ApplyDefaults()
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
 	cfg.DisableImageGeneration = DisableImageGenerationOff
@@ -35,6 +37,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	cfg.UsageStore.ApplyDefaults()
 
 	// Hash remote management key if plaintext is detected (nested), but do NOT persist.
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {
@@ -85,6 +88,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeAPIKeyMetadata()
 
 	return &cfg, nil
 }

@@ -74,6 +74,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		pendingToolCallIDs := make([]string, 0)
 		awaitingToolOutputs := make(map[string]struct{})
 		deferredMessages := make([][]byte, 0)
+		pendingReasoningContent := ""
 
 		flushPendingToolCalls := func() {
 			if len(pendingToolCalls) == 0 {
@@ -81,6 +82,10 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 			assistantMessage := []byte(`{"role":"assistant","tool_calls":[]}`)
 			assistantMessage, _ = sjson.SetBytes(assistantMessage, "tool_calls", pendingToolCalls)
+			if pendingReasoningContent != "" {
+				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", pendingReasoningContent)
+				pendingReasoningContent = ""
+			}
 			out, _ = sjson.SetRawBytes(out, "messages.-1", assistantMessage)
 			for _, id := range pendingToolCallIDs {
 				if strings.TrimSpace(id) == "" {
@@ -125,6 +130,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 
 			switch itemType {
+			case "reasoning":
+				if reasoningContent := responsesReasoningContent(item); reasoningContent != "" {
+					pendingReasoningContent = reasoningContent
+				}
+
 			case "message", "":
 				// Handle regular message conversion
 				role := item.Get("role").String()
@@ -168,6 +178,17 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 				} else if content.Type == gjson.String {
 					message, _ = sjson.SetBytes(message, "content", content.String())
+				}
+
+				if role == "assistant" {
+					if reasoningContent := responsesReasoningContent(item); reasoningContent != "" {
+						pendingReasoningContent = reasoningContent
+					}
+					if pendingReasoningContent != "" {
+						message, _ = sjson.SetBytes(message, "reasoning_content", pendingReasoningContent)
+					}
+				} else if role != "tool" {
+					pendingReasoningContent = ""
 				}
 
 				appendRegularMessage(message)
@@ -280,4 +301,33 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 
 	return out
+}
+
+func responsesReasoningContent(item gjson.Result) string {
+	if reasoning := item.Get("reasoning_content").String(); strings.TrimSpace(reasoning) != "" {
+		return reasoning
+	}
+
+	if summary := item.Get("summary"); summary.Exists() && summary.IsArray() {
+		parts := make([]string, 0)
+		summary.ForEach(func(_, part gjson.Result) bool {
+			partType := part.Get("type").String()
+			if partType != "" && partType != "summary_text" {
+				return true
+			}
+			if text := part.Get("text").String(); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+			return true
+		})
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+
+	if encryptedContent := item.Get("encrypted_content").String(); strings.TrimSpace(encryptedContent) != "" {
+		return encryptedContent
+	}
+
+	return ""
 }

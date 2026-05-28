@@ -1,5 +1,7 @@
 # CLIProxyAPI Deployment Guide
 
+> Production safety: do not deploy, replace, restart, reload, `kickstart`, `bootout/bootstrap`, or otherwise touch the running production `cli-proxy-api` binary/process unless the user explicitly asks for that action. For UI/API work, build and verify artifacts first, then wait for explicit approval before applying them to the live service.
+
 ## Quick Start
 
 ### Build & Run
@@ -60,13 +62,13 @@ go build -o cli-proxy-api ./cmd/server
        
        <key>ProgramArguments</key>
        <array>
-           <string>/Users/justin/Dev/VibeLab/CLIProxyAPI/cli-proxy-api</string>
+           <string>/Users/justin/Dev/VibeLab/CLIProxy/CLIProxyAPI/cli-proxy-api</string>
            <string>--config</string>
            <string>/Users/justin/.cli-proxy-api/config.9router.yaml</string>
        </array>
        
        <key>WorkingDirectory</key>
-       <string>/Users/justin/Dev/VibeLab/CLIProxyAPI</string>
+       <string>/Users/justin/Dev/VibeLab/CLIProxy/CLIProxyAPI</string>
        
        <key>RunAtLoad</key>
        <true/>
@@ -75,10 +77,10 @@ go build -o cli-proxy-api ./cmd/server
        <true/>
        
        <key>StandardOutPath</key>
-       <string>/Users/justin/Dev/VibeLab/CLIProxyAPI/logs/stdout.log</string>
+       <string>/Users/justin/Dev/VibeLab/CLIProxy/CLIProxyAPI/logs/stdout.log</string>
        
        <key>StandardErrorPath</key>
-       <string>/Users/justin/Dev/VibeLab/CLIProxyAPI/logs/stderr.log</string>
+       <string>/Users/justin/Dev/VibeLab/CLIProxy/CLIProxyAPI/logs/stderr.log</string>
        
        <key>EnvironmentVariables</key>
        <dict>
@@ -125,14 +127,33 @@ launchctl load ~/Library/LaunchAgents/com.vibelab.cliproxyapi.plist
 
 ### Update Code
 
-```bash
-# 1. Build new binary
-go build -o cli-proxy-api ./cmd/server
+The management UI is bundled into the Go binary. After pulling backend or UI-related changes, rebuild and restart the service; only updating files on disk will not affect the running process.
 
-# 2. Restart service
-launchctl stop com.vibelab.cliproxyapi
-launchctl start com.vibelab.cliproxyapi
+```bash
+# 1. Pull the latest code
+git pull --ff-only origin main
+
+# 2. Build into a temporary binary first
+go build -o cli-proxy-api.new ./cmd/server
+
+# 3. Keep a rollback copy, then atomically replace the runtime binary
+cp -p cli-proxy-api /private/tmp/cli-proxy-api.previous.$(date +%Y%m%d-%H%M%S)
+mv cli-proxy-api.new cli-proxy-api
+
+# 4. Reload launchd so plist path/config changes are picked up
+launchctl bootout gui/$(id -u)/com.vibelab.cliproxyapi || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vibelab.cliproxyapi.plist
+launchctl kickstart -k gui/$(id -u)/com.vibelab.cliproxyapi
+
+# 5. Smoke test the new runtime
+launchctl print gui/$(id -u)/com.vibelab.cliproxyapi
+lsof -nP -iTCP:8317 -sTCP:LISTEN
+curl -sS http://localhost:8317/healthz
+curl -sS -o /tmp/cliproxy-management.html -w "%{http_code} %{size_download} %{content_type}\n" http://localhost:8317/management.html
+curl -sS -o /tmp/cliproxy-usage-analytics.html -w "%{http_code} %{size_download} %{content_type}\n" http://localhost:8317/usage-analytics.html
 ```
+
+If `launchctl print` shows an old `program`, `arguments`, `working directory`, or log path, update `~/Library/LaunchAgents/com.vibelab.cliproxyapi.plist` before restarting. The expected local project path is `/Users/justin/Dev/VibeLab/CLIProxy/CLIProxyAPI`.
 
 ## Monitoring
 
@@ -342,7 +363,17 @@ For production environments:
 4. **Enable usage statistics**:
    ```yaml
    usage-statistics-enabled: true
+   usage-store:
+     type: postgres
+     dsn: postgresql://user:pass@localhost:5432/cliproxy
+     schema: ""
+     events-table: usage_events
+     hourly-rollup-table: usage_rollups_hourly
+     daily-rollup-table: usage_rollups_daily
+     rollups-enabled: true
+     rollup-query-min-events: 50000
    ```
+   The usage analytics store persists append-only events for the current Usage & Analytics screen and maintains hourly/daily rollups for larger datasets. `USAGESTORE_DSN` and related `USAGESTORE_*` environment variables can override the YAML values. When `PGSTORE_DSN` is set and no explicit usage store DSN is configured, the same Postgres DSN is reused for usage analytics.
 5. **Configure external storage** (postgres/git/object store) for high availability
 6. **Set up monitoring** and alerting on health endpoints
 7. **Use systemd** (Linux) or launchd (macOS) for auto-restart

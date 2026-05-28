@@ -68,6 +68,45 @@ func TestStoreSnapshotAggregatesByAPIKey(t *testing.T) {
 	}
 }
 
+func TestStoreSnapshotTodaySeriesUsesHourlyBuckets(t *testing.T) {
+	store := newStore()
+	now := time.Date(2026, 5, 24, 20, 30, 0, 0, time.Local)
+	firstHour := time.Date(2026, 5, 24, 9, 15, 0, 0, time.Local)
+	secondHour := time.Date(2026, 5, 24, 10, 45, 0, 0, time.Local)
+
+	store.HandleUsage(context.Background(), coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      "sk-hourly-key",
+		RequestedAt: firstHour,
+		Detail:      coreusage.Detail{InputTokens: 100, TotalTokens: 150},
+	})
+	store.HandleUsage(context.Background(), coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      "sk-hourly-key",
+		RequestedAt: secondHour,
+		Detail:      coreusage.Detail{InputTokens: 200, TotalTokens: 250},
+	})
+
+	snapshot := store.Snapshot("sk-hourly-key", 1, true, now)
+	if len(snapshot.Series) != 24 {
+		t.Fatalf("today series buckets = %d, want 24", len(snapshot.Series))
+	}
+	if snapshot.Series[0].Label != "00:00" || snapshot.Series[23].Label != "23:00" {
+		t.Fatalf("hour labels = first %q last %q, want 00:00/23:00", snapshot.Series[0].Label, snapshot.Series[23].Label)
+	}
+	if snapshot.Series[9].Tokens.TotalTokens != 150 {
+		t.Fatalf("09:00 total tokens = %d, want 150", snapshot.Series[9].Tokens.TotalTokens)
+	}
+	if snapshot.Series[10].Tokens.TotalTokens != 250 {
+		t.Fatalf("10:00 total tokens = %d, want 250", snapshot.Series[10].Tokens.TotalTokens)
+	}
+	if snapshot.Totals.Tokens.TotalTokens != 400 {
+		t.Fatalf("today total tokens = %d, want 400", snapshot.Totals.Tokens.TotalTokens)
+	}
+}
+
 func TestStoreDisabledDropsRecords(t *testing.T) {
 	store := newStore()
 	store.SetEnabled(false)
@@ -83,6 +122,23 @@ func TestStoreDisabledDropsRecords(t *testing.T) {
 	}
 	if snapshot.Totals.Requests != 0 {
 		t.Fatalf("requests = %d, want 0", snapshot.Totals.Requests)
+	}
+}
+
+func TestStoreSnapshotEncodesEmptyRecentRequestsAsArray(t *testing.T) {
+	store := newStore()
+	snapshot := store.Snapshot("sk-test-key", 1, true, time.Date(2026, 5, 24, 12, 0, 0, 0, time.Local))
+
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `"series":[`) {
+		t.Fatalf("series should encode as an array: %s", body)
+	}
+	if !strings.Contains(body, `"recent_requests":[]`) {
+		t.Fatalf("recent_requests should encode as an empty array: %s", body)
 	}
 }
 
@@ -106,6 +162,18 @@ func TestStoreAnalyticsAggregatesManagementDimensions(t *testing.T) {
 			TotalTokens:     23,
 		},
 	})
+	store.HandleUsage(ctx, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      "sk-test-key-previous",
+		Source:      "account-a",
+		RequestedAt: now.AddDate(0, 0, -8),
+		Detail: coreusage.Detail{
+			InputTokens:  7,
+			OutputTokens: 4,
+			TotalTokens:  11,
+		},
+	})
 
 	snapshot := store.Analytics("today", now.Add(time.Minute))
 	if snapshot.Period != "today" {
@@ -119,6 +187,16 @@ func TestStoreAnalyticsAggregatesManagementDimensions(t *testing.T) {
 	}
 	if len(snapshot.Series) != 24 {
 		t.Fatalf("series buckets = %d, want 24", len(snapshot.Series))
+	}
+	foundBreakdown := false
+	for _, bucket := range snapshot.Series {
+		if bucket.Tokens == 23 && bucket.Breakdown.InputTokens == 12 && bucket.Breakdown.OutputTokens == 8 && bucket.Breakdown.ReasoningTokens == 3 && bucket.Breakdown.CachedTokens == 2 {
+			foundBreakdown = true
+			break
+		}
+	}
+	if !foundBreakdown {
+		t.Fatalf("series token breakdown = %+v, want input/output/reasoning/cached bucket", snapshot.Series)
 	}
 	if len(snapshot.ByProvider) != 1 || snapshot.ByProvider[0].Provider != "openai" {
 		t.Fatalf("by provider = %+v, want openai", snapshot.ByProvider)
@@ -134,6 +212,14 @@ func TestStoreAnalyticsAggregatesManagementDimensions(t *testing.T) {
 	}
 	if len(snapshot.ByEndpoint) != 1 || snapshot.ByEndpoint[0].Endpoint != "/v1/chat/completions" {
 		t.Fatalf("by endpoint = %+v, want endpoint", snapshot.ByEndpoint)
+	}
+
+	weekSnapshot := store.Analytics("7d", now.Add(time.Minute))
+	if weekSnapshot.Totals.Tokens.TotalTokens != 23 {
+		t.Fatalf("7d total tokens = %d, want current period total 23", weekSnapshot.Totals.Tokens.TotalTokens)
+	}
+	if weekSnapshot.PreviousTotals.Tokens.TotalTokens != 11 {
+		t.Fatalf("7d previous tokens = %d, want 11", weekSnapshot.PreviousTotals.Tokens.TotalTokens)
 	}
 }
 
@@ -328,4 +414,101 @@ func TestStoreSubscribeReceivesUsageUpdate(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for usage update notification")
 	}
+}
+
+func TestStoreUsesRepositoryForPersistenceAndQueries(t *testing.T) {
+	store := newStore()
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.Local)
+	repository := &fakeUsageRepository{
+		analytics: AnalyticsSnapshot{
+			Period:                 "today",
+			UsageStatisticsEnabled: true,
+			Totals:                 Aggregate{Requests: 99},
+		},
+		snapshot: Snapshot{
+			KeyLabel:               "sk-tes...3456",
+			UsageStatisticsEnabled: true,
+			Totals:                 Aggregate{Requests: 88},
+		},
+		details: RequestDetailsSnapshot{
+			Totals:     Aggregate{Requests: 77},
+			Pagination: Pagination{Page: 1, PageSize: 10, TotalItems: 77},
+		},
+	}
+	store.SetRepository(repository)
+
+	ctx := internallogging.WithRequestID(context.Background(), "req_repo")
+	store.HandleUsage(ctx, coreusage.Record{
+		Provider:    "openai",
+		Model:       "gpt-5.5",
+		APIKey:      "sk-test-key-123456",
+		RequestedAt: now,
+		Detail:      coreusage.Detail{TotalTokens: 1},
+	})
+
+	if len(repository.inserted) != 1 {
+		t.Fatalf("inserted events = %d, want 1", len(repository.inserted))
+	}
+	if repository.inserted[0].APIKeyHash == "" || strings.Contains(repository.inserted[0].APIKeyHash, "sk-test") {
+		t.Fatalf("api key hash = %q, want non-empty hash without raw key", repository.inserted[0].APIKeyHash)
+	}
+	if repository.inserted[0].Detail.RequestID != "req_repo" {
+		t.Fatalf("request id = %q, want req_repo", repository.inserted[0].Detail.RequestID)
+	}
+
+	store.RecordHTTPRequestDetail(HTTPRequestDetail{
+		RequestID:    "req_repo",
+		StatusCode:   200,
+		ResponseBody: []byte(`{"ok":true}`),
+	})
+	if len(repository.updated) != 1 {
+		t.Fatalf("updated details = %d, want 1", len(repository.updated))
+	}
+
+	analytics := store.Analytics("today", now)
+	if analytics.Totals.Requests != 99 {
+		t.Fatalf("repository analytics requests = %d, want 99", analytics.Totals.Requests)
+	}
+	snapshot := store.Snapshot("sk-test-key-123456", 7, true, now)
+	if snapshot.Totals.Requests != 88 {
+		t.Fatalf("repository snapshot requests = %d, want 88", snapshot.Totals.Requests)
+	}
+	details := store.RequestDetails(RequestDetailsFilter{Page: 1, PageSize: 10}, now)
+	if details.Totals.Requests != 77 {
+		t.Fatalf("repository details requests = %d, want 77", details.Totals.Requests)
+	}
+}
+
+type fakeUsageRepository struct {
+	inserted  []UsageEvent
+	updated   []RequestDetail
+	snapshot  Snapshot
+	analytics AnalyticsSnapshot
+	details   RequestDetailsSnapshot
+}
+
+func (f *fakeUsageRepository) InsertEvent(ctx context.Context, event UsageEvent) error {
+	f.inserted = append(f.inserted, event)
+	return nil
+}
+
+func (f *fakeUsageRepository) UpdateEventDetail(ctx context.Context, detail RequestDetail) error {
+	f.updated = append(f.updated, detail)
+	return nil
+}
+
+func (f *fakeUsageRepository) SnapshotForKey(ctx context.Context, apiKeyHash string, keyLabel string, windowDays int, active bool, now time.Time, enabled bool) (Snapshot, error) {
+	return f.snapshot, nil
+}
+
+func (f *fakeUsageRepository) Analytics(ctx context.Context, period string, now time.Time, enabled bool, activeRequests []ActiveRequest) (AnalyticsSnapshot, error) {
+	return f.analytics, nil
+}
+
+func (f *fakeUsageRepository) RequestDetails(ctx context.Context, filter RequestDetailsFilter, now time.Time) (RequestDetailsSnapshot, error) {
+	return f.details, nil
+}
+
+func (f *fakeUsageRepository) Close() error {
+	return nil
 }

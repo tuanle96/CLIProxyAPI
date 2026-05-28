@@ -216,6 +216,26 @@ func TestBuildConfigChangeDetails_SecretsAndCounts(t *testing.T) {
 	expectContains(t, details, "remote-management.secret-key: created")
 }
 
+func TestBuildConfigChangeDetails_APIKeyMetadata(t *testing.T) {
+	key := "a"
+	oldCfg := &config.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: []string{key},
+		},
+	}
+	newCfg := &config.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: []string{key},
+			APIKeyMetadata: map[string]config.APIKeyMetadata{
+				config.APIKeyID(key): {Owner: "platform"},
+			},
+		},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "api-key-metadata: updated")
+}
+
 func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	oldCfg := &config.Config{
 		Port:                   1000,
