@@ -299,9 +299,21 @@ func BuildKiroPayloadFromOpenAI(openaiBody []byte, modelID, profileArn, origin s
 		}
 	}
 
-	// Session IDs: extract from messages[].additional_kwargs (LangChain format) or random
+	// Session IDs: extract from messages[].additional_kwargs (LangChain format) or
+	// derive a stable identifier from request headers / message content. Kiro's
+	// upstream associates conversation state with conversationId; if we hand it
+	// a fresh UUID on every turn the upstream treats each request as a brand
+	// new chat, so even with full history in the payload the model answers as
+	// if from scratch (canned greeting on every reply). Stable derivation:
+	//   1. messages[].additional_kwargs.conversationId (LangChain),
+	//   2. Codex Desktop's Session-Id / Thread-Id / X-Client-Request-Id header,
+	//   3. SHA-1 of the first non-empty user message content,
+	//   4. random UUID as a last-resort.
 	conversationID := extractMetadataFromMessages(messages, "conversationId")
 	continuationID := extractMetadataFromMessages(messages, "continuationId")
+	if conversationID == "" {
+		conversationID = kirocommon.DeriveStableConversationID(headers, messages)
+	}
 	if conversationID == "" {
 		conversationID = uuid.New().String()
 	}

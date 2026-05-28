@@ -295,9 +295,16 @@ func BuildKiroPayload(claudeBody []byte, modelID, profileArn, origin string, isA
 		}
 	}
 
-	// Session IDs: extract from messages[].additional_kwargs (LangChain format) or random
+	// Session IDs: extract from messages[].additional_kwargs (LangChain format)
+	// or derive a stable identifier so multi-turn calls share the same
+	// conversationId. Random UUID per turn made Kiro upstream treat every
+	// request as a fresh chat — see the matching block in kiro/openai for a
+	// fuller writeup.
 	conversationID := extractMetadataFromMessages(messages, "conversationId")
 	continuationID := extractMetadataFromMessages(messages, "continuationId")
+	if conversationID == "" {
+		conversationID = kirocommon.DeriveStableConversationID(headers, messages)
+	}
 	if conversationID == "" {
 		conversationID = uuid.New().String()
 	}
