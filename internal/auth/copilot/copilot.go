@@ -58,10 +58,10 @@ func RequestHeaders() map[string]string {
 	return map[string]string{
 		"Accept":                 "application/json",
 		"Copilot-Integration-Id": "vscode-chat",
-		"Editor-Plugin-Version":  "copilot-chat/0.35.0",
-		"Editor-Version":         "vscode/1.85.1",
+		"Editor-Plugin-Version":  "copilot-chat/1.108.0",
+		"Editor-Version":         "vscode/1.108.0",
 		"OpenAI-Intent":          "conversation-panel",
-		"User-Agent":             "GitHubCopilotChat/0.35.0",
+		"User-Agent":             "GitHubCopilotChat/1.108.0",
 		"X-GitHub-Api-Version":   "2025-04-01",
 		"X-Initiator":            "user",
 		"X-Requested-With":       "XMLHttpRequest",

@@ -378,6 +378,9 @@ func authFileModelResponseItems(models []*registry.ModelInfo) []gin.H {
 		if m.OwnedBy != "" {
 			entry["owned_by"] = m.OwnedBy
 		}
+		if len(m.SupportedEndpoints) > 0 {
+			entry["supported_endpoints"] = append([]string(nil), m.SupportedEndpoints...)
+		}
 		result = append(result, entry)
 	}
 	return result

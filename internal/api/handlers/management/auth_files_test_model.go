@@ -68,12 +68,7 @@ func (h *Handler) TestAuthFileModel(c *gin.Context) {
 		return
 	}
 
-	payload, err := json.Marshal(gin.H{
-		"model":      model,
-		"messages":   []gin.H{{"role": "user", "content": "Hi"}},
-		"stream":     false,
-		"max_tokens": 8,
-	})
+	handlerType, payload, err := authFileModelTestPayload(auth, model)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -85,7 +80,7 @@ func (h *Handler) TestAuthFileModel(c *gin.Context) {
 	ctx = apiHandlers.WithPinnedAuthID(ctx, auth.ID)
 
 	started := time.Now()
-	resp, _, errMsg := apiHandler.ExecuteWithAuthManager(ctx, "openai", model, payload, "")
+	resp, _, errMsg := apiHandler.ExecuteWithAuthManager(ctx, handlerType, model, payload, "")
 	elapsed := time.Since(started).Milliseconds()
 	if errMsg != nil {
 		status := errMsg.StatusCode
@@ -157,24 +152,69 @@ func (h *Handler) authForFileRequest(name string, authIndex string) *coreauth.Au
 }
 
 func authFileSupportsModel(auth *coreauth.Auth, model string) bool {
+	_, supported, registryHasModels := authFileRegisteredModel(auth, model)
+	if !registryHasModels {
+		return true
+	}
+	return supported
+}
+
+func authFileRegisteredModel(auth *coreauth.Auth, model string) (*registry.ModelInfo, bool, bool) {
 	if auth == nil {
-		return false
+		return nil, false, false
 	}
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return false
+		return nil, false, false
 	}
 	models := registry.GetGlobalRegistry().GetModelsForClient(auth.ID)
 	if len(models) == 0 {
-		return true
+		return nil, false, false
 	}
 	for _, item := range models {
 		if item == nil {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(item.ID), model) {
-			return true
+			return item, true, true
 		}
 	}
-	return false
+	return nil, false, true
+}
+
+func authFileModelTestPayload(auth *coreauth.Auth, model string) (string, []byte, error) {
+	if authFileShouldUseResponsesTest(auth, model) {
+		payload, err := json.Marshal(gin.H{
+			"model":             model,
+			"input":             "Hi",
+			"stream":            false,
+			"max_output_tokens": 16,
+		})
+		return "openai-response", payload, err
+	}
+
+	payload, err := json.Marshal(gin.H{
+		"model":      model,
+		"messages":   []gin.H{{"role": "user", "content": "Hi"}},
+		"stream":     false,
+		"max_tokens": 8,
+	})
+	return "openai", payload, err
+}
+
+func authFileShouldUseResponsesTest(auth *coreauth.Auth, model string) bool {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "copilot") {
+		return false
+	}
+	if info, supported, _ := authFileRegisteredModel(auth, model); supported && info != nil {
+		if len(info.SupportedEndpoints) > 0 {
+			return registry.CopilotSupportsResponses(info.SupportedEndpoints) && !registry.CopilotSupportsChatCompletions(info.SupportedEndpoints)
+		}
+	}
+	return looksLikeCopilotResponsesOnlyModel(model)
+}
+
+func looksLikeCopilotResponsesOnlyModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalized, "gpt-") && strings.Contains(normalized, "-codex")
 }

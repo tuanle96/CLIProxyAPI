@@ -27,7 +27,7 @@ var copilotModelProbeSlots = make(chan struct{}, 8)
 
 // refreshCopilotDynamicModels schedules an asynchronous fetch of the live
 // Copilot model list for the given auth and re-registers only models that pass
-// a live chat-completions probe. Copilot /models can over-report account access,
+// a live endpoint-specific probe. Copilot /models can over-report account access,
 // so probe success is the source of truth for auth-scoped callable models.
 func (s *Service) refreshCopilotDynamicModels(a *coreauth.Auth, excluded []string) {
 	if a == nil || a.ID == "" || a.Metadata == nil {
@@ -76,7 +76,7 @@ func (s *Service) refreshCopilotDynamicModels(a *coreauth.Auth, excluded []strin
 		}
 		merged := registry.MergeCopilotDynamicWithStaticMetadata(converted, registry.GetCopilotModels())
 		merged = applyExcludedModels(merged, excludedCopy)
-		verified := verifyCopilotChatCompletionModels(authSvc, authID, endpoint, token, merged)
+		verified := verifyCopilotCallableModels(authSvc, authID, endpoint, token, merged)
 
 		GlobalModelRegistry().RegisterClient(authID, provider, verified)
 		if s.coreManager != nil {
@@ -87,7 +87,7 @@ func (s *Service) refreshCopilotDynamicModels(a *coreauth.Auth, excluded []strin
 	}()
 }
 
-func verifyCopilotChatCompletionModels(authSvc *copilotauth.Auth, authID, endpoint, token string, models []*registry.ModelInfo) []*registry.ModelInfo {
+func verifyCopilotCallableModels(authSvc *copilotauth.Auth, authID, endpoint, token string, models []*registry.ModelInfo) []*registry.ModelInfo {
 	if authSvc == nil || len(models) == 0 {
 		return nil
 	}
@@ -102,7 +102,7 @@ func verifyCopilotChatCompletionModels(authSvc *copilotauth.Auth, authID, endpoi
 			log.Debugf("copilot: skipped model probe for %s/%s: %v", authID, model.ID, ctx.Err())
 			continue
 		}
-		result, err := authSvc.ProbeChatCompletionModel(ctx, endpoint, token, model.ID)
+		result, err := probeCopilotModelForSupportedEndpoint(authSvc, ctx, endpoint, token, model)
 		releaseCopilotModelProbeSlot()
 		cancel()
 		if err != nil {
@@ -124,6 +124,19 @@ func verifyCopilotChatCompletionModels(authSvc *copilotauth.Auth, authID, endpoi
 		log.Debugf("copilot: skipping non-callable model %s for %s after live probe: status=%d code=%s message=%s", model.ID, authID, result.StatusCode, result.ErrorCode, result.ErrorMessage)
 	}
 	return verified
+}
+
+func probeCopilotModelForSupportedEndpoint(authSvc *copilotauth.Auth, ctx context.Context, endpoint, token string, model *registry.ModelInfo) (*copilotauth.ModelProbeResult, error) {
+	if authSvc == nil || model == nil {
+		return nil, nil
+	}
+	if len(model.SupportedEndpoints) == 0 || registry.CopilotSupportsChatCompletions(model.SupportedEndpoints) {
+		return authSvc.ProbeChatCompletionModel(ctx, endpoint, token, model.ID)
+	}
+	if registry.CopilotSupportsResponses(model.SupportedEndpoints) {
+		return authSvc.ProbeResponsesModel(ctx, endpoint, token, model.ID)
+	}
+	return authSvc.ProbeChatCompletionModel(ctx, endpoint, token, model.ID)
 }
 
 func acquireCopilotModelProbeSlot(ctx context.Context) bool {

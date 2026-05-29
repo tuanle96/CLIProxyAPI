@@ -22,8 +22,9 @@ type CopilotAPIModel struct {
 }
 
 // ConvertCopilotAPIModels converts live Copilot API models to ModelInfo.
-// Entries hidden from the Copilot model picker or disabled by account policy
-// are skipped because they are not callable choices for this auth.
+// Account-policy-disabled models are skipped. Picker visibility is not treated
+// as access control because Copilot Student can hide auto-selected models from
+// the picker while the model remains callable through the Responses endpoint.
 func ConvertCopilotAPIModels(models []*CopilotAPIModel) []*ModelInfo {
 	if len(models) == 0 {
 		return nil
@@ -62,6 +63,7 @@ func ConvertCopilotAPIModels(models []*CopilotAPIModel) []*ModelInfo {
 			MaxCompletionTokens:       m.MaxOutput,
 			SupportedInputModalities:  input,
 			SupportedOutputModalities: []string{"TEXT"},
+			SupportedEndpoints:        normalizeCopilotSupportedEndpoints(m.SupportedEndpoints),
 		})
 	}
 	return out
@@ -74,10 +76,7 @@ func isUsableCopilotAPIModel(m *CopilotAPIModel) bool {
 	if modelType := strings.TrimSpace(strings.ToLower(m.Type)); modelType != "" && modelType != "chat" {
 		return false
 	}
-	if len(m.SupportedEndpoints) > 0 && !copilotSupportsChatCompletions(m.SupportedEndpoints) {
-		return false
-	}
-	if m.ModelPickerEnabled != nil && !*m.ModelPickerEnabled {
+	if len(m.SupportedEndpoints) > 0 && !CopilotSupportsChatCompletions(m.SupportedEndpoints) && !CopilotSupportsResponses(m.SupportedEndpoints) {
 		return false
 	}
 	if state := strings.TrimSpace(strings.ToLower(m.PolicyState)); state != "" && state != "enabled" {
@@ -86,20 +85,61 @@ func isUsableCopilotAPIModel(m *CopilotAPIModel) bool {
 	return true
 }
 
-func copilotSupportsChatCompletions(endpoints []string) bool {
+func CopilotSupportsChatCompletions(endpoints []string) bool {
 	for _, endpoint := range endpoints {
-		normalized := strings.TrimSpace(strings.ToLower(endpoint))
-		if normalized == "" {
-			continue
-		}
-		if !strings.HasPrefix(normalized, "/") {
-			normalized = "/" + normalized
-		}
-		if normalized == "/chat/completions" {
+		if normalizeCopilotEndpoint(endpoint) == "/chat/completions" {
 			return true
 		}
 	}
 	return false
+}
+
+func CopilotSupportsResponses(endpoints []string) bool {
+	for _, endpoint := range endpoints {
+		switch normalizeCopilotEndpoint(endpoint) {
+		case "/responses", "ws:/responses":
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCopilotSupportedEndpoints(endpoints []string) []string {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(endpoints))
+	seen := make(map[string]struct{}, len(endpoints))
+	for _, endpoint := range endpoints {
+		normalized := normalizeCopilotEndpoint(endpoint)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func normalizeCopilotEndpoint(endpoint string) string {
+	normalized := strings.TrimSpace(strings.ToLower(endpoint))
+	if normalized == "" {
+		return ""
+	}
+	if strings.HasPrefix(normalized, "ws:") {
+		path := strings.TrimPrefix(normalized, "ws:")
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		return "ws:" + path
+	}
+	if !strings.HasPrefix(normalized, "/") {
+		normalized = "/" + normalized
+	}
+	return normalized
 }
 
 // MergeCopilotDynamicWithStaticMetadata enriches live Copilot models with local
@@ -130,7 +170,17 @@ func MergeCopilotDynamicWithStaticMetadata(dynamicModels, staticModels []*ModelI
 		seenIDs[dm.ID] = struct{}{}
 
 		if sm, exists := staticMap[dm.ID]; exists {
-			result = append(result, sm)
+			merged := cloneModelInfo(sm)
+			if len(dm.SupportedEndpoints) > 0 {
+				merged.SupportedEndpoints = append([]string(nil), dm.SupportedEndpoints...)
+			}
+			if merged.ContextLength == 0 {
+				merged.ContextLength = dm.ContextLength
+			}
+			if merged.MaxCompletionTokens == 0 {
+				merged.MaxCompletionTokens = dm.MaxCompletionTokens
+			}
+			result = append(result, merged)
 			continue
 		}
 		result = append(result, dm)

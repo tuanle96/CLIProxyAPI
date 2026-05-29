@@ -54,6 +54,8 @@ type ModelInfo struct {
 	SupportedInputModalities []string `json:"supportedInputModalities,omitempty"`
 	// SupportedOutputModalities lists supported output modalities (e.g., TEXT, IMAGE)
 	SupportedOutputModalities []string `json:"supportedOutputModalities,omitempty"`
+	// SupportedEndpoints lists provider-native API endpoints that can serve this model.
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
 
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
 	// This is optional and currently used for Gemini thinking budget normalization.
@@ -539,6 +541,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	}
 	if len(model.SupportedOutputModalities) > 0 {
 		copyModel.SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
+	}
+	if len(model.SupportedEndpoints) > 0 {
+		copyModel.SupportedEndpoints = append([]string(nil), model.SupportedEndpoints...)
 	}
 	if model.Thinking != nil {
 		copyThinking := *model.Thinking

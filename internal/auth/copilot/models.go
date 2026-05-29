@@ -36,8 +36,8 @@ type CopilotModel struct {
 	} `json:"policy"`
 }
 
-// ChatModelProbeResult captures the result of a live Copilot chat-completions probe.
-type ChatModelProbeResult struct {
+// ModelProbeResult captures the result of a live Copilot model probe.
+type ModelProbeResult struct {
 	Model             string
 	Callable          bool
 	ModelNotSupported bool
@@ -45,6 +45,10 @@ type ChatModelProbeResult struct {
 	ErrorCode         string
 	ErrorMessage      string
 }
+
+// ChatModelProbeResult is kept for compatibility with callers that still refer
+// to the original chat-completions probe result name.
+type ChatModelProbeResult = ModelProbeResult
 
 // ListModels fetches the live Copilot model catalog from {endpoint}/models
 // using the internal Copilot token as the bearer credential.
@@ -97,7 +101,29 @@ func (a *Auth) ListModels(ctx context.Context, endpoint, copilotToken string) ([
 // ProbeChatCompletionModel verifies that a model is actually callable through
 // Copilot's OpenAI-compatible chat completions endpoint. Copilot /models can
 // report account-disabled models as enabled, so the live call is the source of truth.
-func (a *Auth) ProbeChatCompletionModel(ctx context.Context, endpoint, copilotToken, model string) (*ChatModelProbeResult, error) {
+func (a *Auth) ProbeChatCompletionModel(ctx context.Context, endpoint, copilotToken, model string) (*ModelProbeResult, error) {
+	payload := map[string]any{
+		"model":      strings.TrimSpace(model),
+		"messages":   []map[string]string{{"role": "user", "content": "Hi"}},
+		"stream":     false,
+		"max_tokens": 1,
+	}
+	return a.probeModel(ctx, endpoint, copilotToken, model, "/chat/completions", payload)
+}
+
+// ProbeResponsesModel verifies that a model is callable through Copilot's
+// OpenAI-compatible Responses endpoint.
+func (a *Auth) ProbeResponsesModel(ctx context.Context, endpoint, copilotToken, model string) (*ModelProbeResult, error) {
+	payload := map[string]any{
+		"model":             strings.TrimSpace(model),
+		"input":             "Hi",
+		"stream":            false,
+		"max_output_tokens": 16,
+	}
+	return a.probeModel(ctx, endpoint, copilotToken, model, "/responses", payload)
+}
+
+func (a *Auth) probeModel(ctx context.Context, endpoint, copilotToken, model, path string, payload map[string]any) (*ModelProbeResult, error) {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {
 		endpoint = DefaultAPIEndpoint
@@ -110,19 +136,25 @@ func (a *Auth) ProbeChatCompletionModel(ctx context.Context, endpoint, copilotTo
 	if model == "" {
 		return nil, fmt.Errorf("copilot: model is empty")
 	}
-
-	payload := map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "Hi"}},
-		"stream":     false,
-		"max_tokens": 1,
+	if payload == nil {
+		return nil, fmt.Errorf("copilot: model probe payload is empty")
 	}
+	payload["model"] = model
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("copilot: marshal model probe payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/chat/completions", bytes.NewReader(body))
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("copilot: model probe path is empty")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("copilot: create model probe request: %w", err)
 	}
@@ -147,7 +179,7 @@ func (a *Auth) ProbeChatCompletionModel(ctx context.Context, endpoint, copilotTo
 		return nil, fmt.Errorf("copilot: read model probe response: %w", err)
 	}
 
-	result := &ChatModelProbeResult{
+	result := &ModelProbeResult{
 		Model:      model,
 		Callable:   resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices,
 		StatusCode: resp.StatusCode,

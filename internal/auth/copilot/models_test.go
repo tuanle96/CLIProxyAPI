@@ -65,3 +65,38 @@ func TestProbeChatCompletionModelUnsupported(t *testing.T) {
 		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusBadRequest)
 	}
 }
+
+func TestProbeResponsesModelCallable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %s, want /responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got := body["model"]; got != "gpt-5.3-codex" {
+			t.Fatalf("model = %v, want gpt-5.3-codex", got)
+		}
+		if got := body["max_output_tokens"]; got != float64(16) {
+			t.Fatalf("max_output_tokens = %v, want 16", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer server.Close()
+
+	result, err := NewCopilotAuth(nil).ProbeResponsesModel(context.Background(), server.URL, "token", "gpt-5.3-codex")
+	if err != nil {
+		t.Fatalf("ProbeResponsesModel returned error: %v", err)
+	}
+	if result == nil || !result.Callable {
+		t.Fatalf("expected callable result, got %#v", result)
+	}
+	if result.ModelNotSupported {
+		t.Fatalf("did not expect model_not_supported result")
+	}
+}

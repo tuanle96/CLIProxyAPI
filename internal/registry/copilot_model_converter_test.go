@@ -20,16 +20,21 @@ func TestConvertCopilotAPIModelsFiltersUnusableEntries(t *testing.T) {
 	}
 
 	got := ConvertCopilotAPIModels(models)
-	if len(got) != 2 {
-		t.Fatalf("converted %d models, want 2: %#v", len(got), got)
+	if len(got) != 4 {
+		t.Fatalf("converted %d models, want 4: %#v", len(got), got)
 	}
 	ids := make([]string, 0, len(got))
+	endpointsByID := make(map[string][]string, len(got))
 	for _, model := range got {
 		ids = append(ids, model.ID)
+		endpointsByID[model.ID] = model.SupportedEndpoints
 	}
-	wantIDs := []string{"usable", "chat-endpoint"}
+	wantIDs := []string{"usable", "response-only", "chat-endpoint", "picker-hidden"}
 	if !reflect.DeepEqual(ids, wantIDs) {
 		t.Fatalf("converted IDs = %#v, want %#v", ids, wantIDs)
+	}
+	if gotEndpoints := endpointsByID["response-only"]; !reflect.DeepEqual(gotEndpoints, []string{"/responses", "ws:/responses"}) {
+		t.Fatalf("response-only endpoints = %#v, want responses endpoints", gotEndpoints)
 	}
 }
 
