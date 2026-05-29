@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,16 @@ type CopilotModel struct {
 	Policy struct {
 		State string `json:"state"`
 	} `json:"policy"`
+}
+
+// ChatModelProbeResult captures the result of a live Copilot chat-completions probe.
+type ChatModelProbeResult struct {
+	Model             string
+	Callable          bool
+	ModelNotSupported bool
+	StatusCode        int
+	ErrorCode         string
+	ErrorMessage      string
 }
 
 // ListModels fetches the live Copilot model catalog from {endpoint}/models
@@ -81,4 +92,111 @@ func (a *Auth) ListModels(ctx context.Context, endpoint, copilotToken string) ([
 		return nil, fmt.Errorf("copilot: parse models response: %w", err)
 	}
 	return out.Data, nil
+}
+
+// ProbeChatCompletionModel verifies that a model is actually callable through
+// Copilot's OpenAI-compatible chat completions endpoint. Copilot /models can
+// report account-disabled models as enabled, so the live call is the source of truth.
+func (a *Auth) ProbeChatCompletionModel(ctx context.Context, endpoint, copilotToken, model string) (*ChatModelProbeResult, error) {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		endpoint = DefaultAPIEndpoint
+	}
+	copilotToken = strings.TrimSpace(copilotToken)
+	if copilotToken == "" {
+		return nil, fmt.Errorf("copilot: copilot token is empty")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, fmt.Errorf("copilot: model is empty")
+	}
+
+	payload := map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "Hi"}},
+		"stream":     false,
+		"max_tokens": 1,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("copilot: marshal model probe payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("copilot: create model probe request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+copilotToken)
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range RequestHeaders() {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("copilot: model probe request failed: %w", err)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("copilot model probe: close body error: %v", errClose)
+		}
+	}()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("copilot: read model probe response: %w", err)
+	}
+
+	result := &ChatModelProbeResult{
+		Model:      model,
+		Callable:   resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices,
+		StatusCode: resp.StatusCode,
+	}
+	if result.Callable {
+		return result, nil
+	}
+
+	code, message := parseCopilotErrorBody(respBody)
+	result.ErrorCode = code
+	result.ErrorMessage = message
+	result.ModelNotSupported = isCopilotModelNotSupportedProbe(code, message)
+	return result, nil
+}
+
+func parseCopilotErrorBody(body []byte) (string, string) {
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
+		return strings.TrimSpace(parsed.Error.Code), strings.TrimSpace(parsed.Error.Message)
+	}
+	return "", strings.TrimSpace(string(body))
+}
+
+func isCopilotModelNotSupportedProbe(code, message string) bool {
+	lowerCode := strings.ToLower(strings.TrimSpace(code))
+	lowerMessage := strings.ToLower(strings.TrimSpace(message))
+	if strings.Contains(lowerCode, "model_not_supported") {
+		return true
+	}
+	patterns := [...]string{
+		"requested model is not supported",
+		"requested model is unsupported",
+		"requested model is unavailable",
+		"model is not supported",
+		"model not supported",
+		"unsupported model",
+		"model unavailable",
+		"not available for your plan",
+		"not available for your account",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(lowerMessage, pattern) {
+			return true
+		}
+	}
+	return false
 }

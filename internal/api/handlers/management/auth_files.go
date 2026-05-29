@@ -57,6 +57,18 @@ type callbackForwarder struct {
 	done     chan struct{}
 }
 
+type authFileModelPatchRequest struct {
+	Name   string                   `json:"name"`
+	Models []authFileModelPatchItem `json:"models"`
+}
+
+type authFileModelPatchItem struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Type        string `json:"type"`
+	OwnedBy     string `json:"owned_by"`
+}
+
 var (
 	callbackForwardersMu  sync.Mutex
 	callbackForwarders    = make(map[int]*callbackForwarder)
@@ -269,28 +281,91 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		return
 	}
 
-	// Try to find auth ID via authManager
-	var authID string
+	authID := name
+	authProvider := ""
+	var targetAuth *coreauth.Auth
 	if h.authManager != nil {
-		auths := h.authManager.List()
-		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
-				authID = auth.ID
-				break
-			}
+		targetAuth = h.findAuthByNameOrID(name)
+		if targetAuth != nil {
+			authID = targetAuth.ID
+			authProvider = strings.ToLower(strings.TrimSpace(targetAuth.Provider))
 		}
 	}
 
-	if authID == "" {
-		authID = name // fallback to filename as ID
+	manual := false
+	var models []*registry.ModelInfo
+	if targetAuth != nil {
+		if manualModels, manualSet := registry.ManualModelsFromMetadata(targetAuth.Metadata, authProvider, authProvider); manualSet {
+			manual = true
+			models = manualModels
+		}
+	}
+	if !manual {
+		reg := registry.GetGlobalRegistry()
+		models = reg.GetCallableModelsForClient(authID)
 	}
 
-	// Get models from registry
-	reg := registry.GetGlobalRegistry()
-	models := reg.GetModelsForClient(authID)
+	c.JSON(200, gin.H{"models": authFileModelResponseItems(models), "manual": manual})
+}
 
+// PatchAuthFileModels persists a manual models override for one auth file.
+func (h *Handler) PatchAuthFileModels(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req authFileModelPatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	targetAuth := h.findAuthByNameOrID(name)
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	defaultType := strings.ToLower(strings.TrimSpace(targetAuth.Provider))
+	models, err := normalizeAuthFileManualModelStorage(req.Models, defaultType)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if targetAuth.Metadata == nil {
+		targetAuth.Metadata = make(map[string]any)
+	}
+	targetAuth.Metadata["models"] = models
+	delete(targetAuth.Metadata, "manual_models")
+	targetAuth.UpdatedAt = time.Now()
+
+	if _, err := h.authManager.Update(c.Request.Context(), targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	responseModels, _ := registry.ManualModelsFromMetadata(targetAuth.Metadata, defaultType, defaultType)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"manual": true,
+		"models": authFileModelResponseItems(responseModels),
+	})
+}
+
+func authFileModelResponseItems(models []*registry.ModelInfo) []gin.H {
 	result := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		if m == nil {
+			continue
+		}
 		entry := gin.H{
 			"id": m.ID,
 		}
@@ -305,8 +380,42 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 		}
 		result = append(result, entry)
 	}
+	return result
+}
 
-	c.JSON(200, gin.H{"models": result})
+func normalizeAuthFileManualModelStorage(models []authFileModelPatchItem, defaultType string) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			return nil, fmt.Errorf("model id is required")
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		entry := map[string]any{"id": id}
+		if displayName := strings.TrimSpace(model.DisplayName); displayName != "" {
+			entry["display_name"] = displayName
+		}
+		modelType := strings.TrimSpace(model.Type)
+		if modelType == "" {
+			modelType = defaultType
+		}
+		if modelType != "" {
+			entry["type"] = modelType
+		}
+		if ownedBy := strings.TrimSpace(model.OwnedBy); ownedBy != "" {
+			entry["owned_by"] = ownedBy
+		}
+		out = append(out, entry)
+	}
+
+	return out, nil
 }
 
 // List auth files from disk when the auth manager is unavailable.
@@ -939,6 +1048,32 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 }
 
 func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if auth, ok := h.authManager.GetByID(name); ok {
+		return auth
+	}
+	auths := h.authManager.List()
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		if strings.TrimSpace(auth.FileName) == name {
+			return auth
+		}
+		if filepath.Base(strings.TrimSpace(authAttribute(auth, "path"))) == name {
+			return auth
+		}
+	}
+	return nil
+}
+
+func (h *Handler) findAuthByNameOrID(name string) *coreauth.Auth {
 	if h == nil || h.authManager == nil {
 		return nil
 	}

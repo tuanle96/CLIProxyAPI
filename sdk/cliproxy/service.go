@@ -1092,6 +1092,16 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			excluded = strings.Split(val, ",")
 		}
 	}
+	if manualModels, manualSet := registry.ManualModelsFromMetadata(a.Metadata, provider, provider); manualSet {
+		models := applyExcludedModels(manualModels, excluded)
+		models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
+		if key := provider; key != "" {
+			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		} else {
+			s.registerResolvedModelsForAuth(a, strings.ToLower(strings.TrimSpace(a.Provider)), applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		}
+		return
+	}
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
@@ -1170,12 +1180,12 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetXAIModels()
 		models = applyExcludedModels(models, excluded)
 	case "copilot":
-		models = registry.GetCopilotModels()
-		models = applyExcludedModels(models, excluded)
-		// Asynchronously fetch the live Copilot /models catalog and re-register
-		// the merged result so newly-released models surface in /v1/models. The
-		// static list above keeps the registry populated if the call fails.
+		// Copilot /models is account-scoped but can still over-report models that
+		// fail at request time. Do not expose static fallback models for OAuth
+		// auths; the async refresh below registers only live-probed callable models.
+		GlobalModelRegistry().UnregisterClient(a.ID)
 		s.refreshCopilotDynamicModels(a, excluded)
+		return
 	case "kiro":
 		models = registry.GetKiroModels()
 		models = applyExcludedModels(models, excluded)
