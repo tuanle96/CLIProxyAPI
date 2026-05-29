@@ -451,6 +451,30 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 		cliCancel(errMsg.Error)
 		return
 	}
+	// Custom compact: when compact-fallback is disabled and custom-compact is
+	// enabled, perform LLM-based compaction through the proxy's own provider
+	// system instead of forwarding to a Codex compact endpoint.
+	if shouldApplyCustomCompact(h, modelName) {
+		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+		compactResp, err := executeCustomCompact(h, cliCtx, modelName, rawJSON)
+		stopKeepAlive()
+		if err != nil {
+			log.Warnf("custom compact failed: %v", err)
+			c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: fmt.Sprintf("Custom compact failed: %v", err),
+					Type:    "custom_compact_error",
+				},
+			})
+			cliCancel(err.Error())
+			return
+		}
+		c.Header("Content-Type", "application/json")
+		_, _ = c.Writer.Write(compactResp)
+		cliCancel()
+		return
+	}
+
 	if rewritten, newModel, applied := applyCompactModelFallback(h, modelName, rawJSON); applied {
 		rawJSON = rewritten
 		modelName = newModel
