@@ -99,6 +99,39 @@ func enqueueTranslatedSSE(out chan<- cliproxyexecutor.StreamChunk, chunk []byte)
 	out <- cliproxyexecutor.StreamChunk{Payload: append(bytes.Clone(chunk), '\n', '\n')}
 }
 
+// idleTimeoutReader wraps a streaming response body and aborts the read if no
+// bytes arrive within idle. AWS CodeWhisperer occasionally holds a streaming
+// connection open without sending data or closing it; without this guard
+// io.ReadFull blocks until the OS TCP timeout (~15 min), so /v1/responses
+// clients (Codex) hang and never receive response.completed. On idle expiry we
+// close the underlying body, which unblocks the in-flight Read with an error so
+// streamToChannel can finalize the stream. The timer is reset on every Read so
+// healthy-but-slow streams (which emit reasoning/metering events periodically)
+// are never cut short.
+type idleTimeoutReader struct {
+	r     io.ReadCloser
+	idle  time.Duration
+	timer *time.Timer
+}
+
+func newIdleTimeoutReader(r io.ReadCloser, idle time.Duration) *idleTimeoutReader {
+	return &idleTimeoutReader{
+		r:    r,
+		idle: idle,
+		timer: time.AfterFunc(idle, func() {
+			log.Warnf("kiro: stream idle for %v, closing upstream connection", idle)
+			_ = r.Close()
+		}),
+	}
+}
+
+func (x *idleTimeoutReader) Read(p []byte) (int, error) {
+	x.timer.Reset(x.idle)
+	return x.r.Read(p)
+}
+
+func (x *idleTimeoutReader) stop() { x.timer.Stop() }
+
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
 type retryConfig struct {
@@ -723,7 +756,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 		kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
 
 		// TEMP-DEBUG-KIRO-PAYLOAD
-		log.Infof("TEMP-DEBUG-KIRO-PAYLOAD: source=%s len=%d body=%s", from.String(), len(kiroPayload), string(kiroPayload))
+		log.Debugf("kiro: payload built: source=%s len=%d body=%s", from.String(), len(kiroPayload), string(kiroPayload))
 
 		log.Debugf("kiro: trying endpoint %d/%d: %s (Name: %s, Origin: %s)",
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
@@ -1445,7 +1478,12 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				// So we always enable thinking parsing for Kiro responses
 				log.Debugf("kiro: stream thinkingEnabled = %v (always true for Kiro)", thinkingEnabled)
 
-				e.streamToChannel(ctx, resp.Body, out, from, helps.PayloadRequestedModel(opts, req.Model), opts.OriginalRequest, body, reporter, thinkingEnabled)
+				// Guard against upstream stalls: if no bytes arrive within
+				// kiroStreamingReadTimeout, close the body to unblock the read.
+				idleReader := newIdleTimeoutReader(resp.Body, kiroStreamingReadTimeout)
+				defer idleReader.stop()
+
+				e.streamToChannel(ctx, idleReader, out, from, helps.PayloadRequestedModel(opts, req.Model), opts.OriginalRequest, body, reporter, thinkingEnabled)
 			}(httpResp, thinkingEnabled)
 
 			return out, nil
@@ -2575,7 +2613,23 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			// Log the error
 			log.Errorf("kiro: streamToChannel error: %v", eventErr)
 
-			// Send error to channel for client notification
+			if messageStartSent {
+				// We have already begun streaming to the client (HTTP status is
+				// committed). Emitting a raw error here would leave the SSE
+				// stream without a terminal event, so /v1/responses clients
+				// (Codex) keep waiting until their own timeout. Instead, break to
+				// the normal finalization path below: it emits message_delta +
+				// message_stop, which chain.go turns into [DONE] →
+				// response.completed so the client ends cleanly.
+				if upstreamStopReason == "" {
+					upstreamStopReason = "end_turn"
+				}
+				log.Warnf("kiro: stream interrupted mid-response (%v), finalizing gracefully", eventErr)
+				break
+			}
+
+			// Error before any content was streamed: surface it so the handler
+			// can write a clean error response (status not yet committed).
 			out <- cliproxyexecutor.StreamChunk{Err: eventErr}
 			return
 		}
