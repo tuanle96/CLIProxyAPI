@@ -422,7 +422,7 @@ compact-fallback:
 | `enabled` | Toggle. Zero-value default is `false` when omitted; the shipped default config sets it to `true`. |
 | `model` | Codex-capable substitute model (e.g. `gpt-5.5`). Must have an active Codex auth registered. |
 | `applies-to-providers` | Provider identifiers that trigger the fallback. `["*"]` or `[]` matches every non-Codex provider. |
-| `trigger-log` | When `true`, each compact-fallback call writes a private JSON log file (`logs/compact-*.log`, mode `0600`) containing the request input and response output. The write happens in a background goroutine and never affects compact speed or correctness. Default `false`. |
+| `trigger-log` | When `true`, each compact-fallback call writes a private JSON log file (`logs/compact-*.log`, mode `0600`) containing the request input and response output. The write happens in a background goroutine and never affects compact speed or correctness. Zero-value default is `false` when omitted; the shipped default config sets it to `true`. |
 
 **When to use:** You have Codex credentials and want compact to be handled by OpenAI's native compaction service regardless of which model the client is using.
 

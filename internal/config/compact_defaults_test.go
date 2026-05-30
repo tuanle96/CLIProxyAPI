@@ -26,8 +26,11 @@ func TestConfigExampleEnablesCompactFallbackByDefault(t *testing.T) {
 	if got := cfg.CompactFallback.AppliesToProviders; len(got) != 1 || got[0] != "*" {
 		t.Fatalf("CompactFallback.AppliesToProviders = %#v, want []string{\"*\"}", got)
 	}
-	if cfg.CompactFallback.TriggerLog {
-		t.Fatal("CompactFallback.TriggerLog = true, want false")
+	if !cfg.LoggingToFile {
+		t.Fatal("LoggingToFile = false, want true")
+	}
+	if !cfg.CompactFallback.TriggerLog {
+		t.Fatal("CompactFallback.TriggerLog = false, want true")
 	}
 	if cfg.CustomCompact.Enabled {
 		t.Fatal("CustomCompact.Enabled = true, want false")

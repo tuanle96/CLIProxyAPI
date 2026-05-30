@@ -70,7 +70,7 @@ pprof:
 commercial-mode: false
 
 # When true, write application logs to rotating files instead of stdout
-logging-to-file: false
+logging-to-file: true
 
 # Maximum total size (MB) of log files under the logs directory. When exceeded, the oldest log
 # files are deleted until within the limit. Set to 0 to disable.
@@ -211,7 +211,7 @@ compact-fallback:
   model: "gpt-5.5"
   applies-to-providers:
     - "*"
-  trigger-log: false
+  trigger-log: true
 
 # Keep LLM-based custom compact disabled while compact-fallback is active.
 custom-compact:
