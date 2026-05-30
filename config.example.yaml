@@ -204,6 +204,19 @@ streaming:
   keepalive-seconds: 15   # Default: 15. <= 0 disables keep-alives.
   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
 
+# Route /v1/responses/compact for non-Codex providers through Codex by default.
+# Requires at least one active Codex auth for the configured model.
+compact-fallback:
+  enabled: true
+  model: "gpt-5.5"
+  applies-to-providers:
+    - "*"
+  trigger-log: false
+
+# Keep LLM-based custom compact disabled while compact-fallback is active.
+custom-compact:
+  enabled: false
+
 # Signature cache validation for thinking blocks (Antigravity/Claude).
 # When true (default), cached signatures are preferred and validated.
 # When false, client signatures are used directly after normalization (bypass mode for testing).
