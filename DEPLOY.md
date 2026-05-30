@@ -403,7 +403,7 @@ streaming:
 
 ## Context Compaction
 
-Codex CLI sends `POST /v1/responses/compact` to compress conversation context when a session runs long. By default, only Codex-native models handle this endpoint; other providers return `501 Not Implemented`. Two config blocks let you route compact requests differently.
+Codex CLI sends `POST /v1/responses/compact` to compress conversation context when a session runs long. Without compact routing configured, only Codex-native models handle this endpoint and other providers return `501 Not Implemented`. The shipped `config.example.yaml` enables compact fallback by default so non-Codex providers route compact requests through Codex when a Codex auth is available.
 
 ### Option A: Compact Fallback (route through Codex)
 
@@ -419,7 +419,7 @@ compact-fallback:
 
 | Field | Description |
 |---|---|
-| `enabled` | Toggle. Default `false`. |
+| `enabled` | Toggle. Zero-value default is `false` when omitted; the shipped default config sets it to `true`. |
 | `model` | Codex-capable substitute model (e.g. `gpt-5.5`). Must have an active Codex auth registered. |
 | `applies-to-providers` | Provider identifiers that trigger the fallback. `["*"]` or `[]` matches every non-Codex provider. |
 | `trigger-log` | When `true`, each compact-fallback call writes a private JSON log file (`logs/compact-*.log`, mode `0600`) containing the request input and response output. The write happens in a background goroutine and never affects compact speed or correctness. Default `false`. |
