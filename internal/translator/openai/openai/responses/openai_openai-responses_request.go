@@ -60,7 +60,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		inputItems := input.Array()
 		outputCallIDs := make(map[string]struct{})
 		for _, item := range inputItems {
-			if item.Get("type").String() != "function_call_output" {
+			t := item.Get("type").String()
+			if t != "function_call_output" && t != "custom_tool_call_output" {
 				continue
 			}
 			callID := strings.TrimSpace(item.Get("call_id").String())
@@ -125,7 +126,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			if itemType == "" && item.Get("role").String() != "" {
 				itemType = "message"
 			}
-			if itemType != "function_call" {
+			if itemType != "function_call" && itemType != "custom_tool_call" {
 				flushPendingToolCalls()
 			}
 
@@ -234,6 +235,48 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
 					flushDeferredMessages()
 				}
+
+			case "custom_tool_call":
+				// Codex emits custom tool invocations (e.g. apply_patch) as
+				// custom_tool_call with a free-form string `input` instead of the
+				// JSON `arguments` used by function_call. Since the request-side
+				// converter rewrites custom tools into function tools that take a
+				// single string `input`, wrap the raw input back into that shape so
+				// the assistant turn round-trips as a normal tool_call.
+				toolCall := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
+				if callId := item.Get("call_id"); callId.Exists() {
+					toolCall, _ = sjson.SetBytes(toolCall, "id", callId.String())
+				}
+				if name := item.Get("name"); name.Exists() {
+					toolCall, _ = sjson.SetBytes(toolCall, "function.name", name.String())
+				}
+				args := []byte(`{"input":""}`)
+				args, _ = sjson.SetBytes(args, "input", item.Get("input").String())
+				toolCall, _ = sjson.SetBytes(toolCall, "function.arguments", string(args))
+				pendingToolCalls = append(pendingToolCalls, gjson.ParseBytes(toolCall).Value())
+				if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
+					pendingToolCallIDs = append(pendingToolCallIDs, callID)
+				}
+
+			case "custom_tool_call_output":
+				// Result for a custom tool call -> tool message (same shape as
+				// function_call_output, but the payload lives in `output`).
+				toolMessage := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
+				callID := ""
+				if callId := item.Get("call_id"); callId.Exists() {
+					callID = strings.TrimSpace(callId.String())
+					toolMessage, _ = sjson.SetBytes(toolMessage, "tool_call_id", callID)
+				}
+				if output := item.Get("output"); output.Exists() {
+					toolMessage, _ = sjson.SetBytes(toolMessage, "content", output.String())
+				}
+				out, _ = sjson.SetRawBytes(out, "messages.-1", toolMessage)
+				if callID != "" {
+					delete(awaitingToolOutputs, callID)
+				}
+				if len(awaitingToolOutputs) == 0 && len(deferredMessages) > 0 {
+					flushDeferredMessages()
+				}
 			}
 
 		}
@@ -251,12 +294,42 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		var chatCompletionsTools []interface{}
 
 		tools.ForEach(func(_, tool gjson.Result) bool {
-			// Built-in tools (e.g. {"type":"web_search"}) are already compatible with the Chat Completions schema.
-			// Only function tools need structural conversion because Chat Completions nests details under "function".
 			toolType := tool.Get("type").String()
+
+			// Codex registers free-form tools such as apply_patch as custom tools
+			// ({"type":"custom","name":...,"format":{"type":"grammar",...}}). Chat
+			// Completions providers (Kiro, Kimi, etc.) only understand function
+			// tools, so previously these were dropped and the model never learned
+			// the tool existed (e.g. Codex could not edit files via Kiro). Convert
+			// them into function tools that take a single free-form string input,
+			// preserving the grammar hint in the description so the model still
+			// emits a well-formed payload.
+			if toolType == "custom" {
+				name := tool.Get("name").String()
+				if name == "" {
+					return true
+				}
+				description := tool.Get("description").String()
+				if def := tool.Get("format.definition"); def.Exists() && def.String() != "" {
+					syntax := tool.Get("format.syntax").String()
+					if syntax == "" {
+						syntax = "grammar"
+					}
+					description = strings.TrimSpace(description + "\n\nProvide the tool input as a single string in the \"input\" field. It must conform to this " + syntax + " grammar:\n" + def.String())
+				}
+				function := []byte(`{"name":"","description":"","parameters":{"type":"object","properties":{"input":{"type":"string","description":"The raw free-form input for this tool."}},"required":["input"]}}`)
+				function, _ = sjson.SetBytes(function, "name", name)
+				function, _ = sjson.SetBytes(function, "description", description)
+				chatTool := []byte(`{"type":"function","function":{}}`)
+				chatTool, _ = sjson.SetRawBytes(chatTool, "function", function)
+				chatCompletionsTools = append(chatCompletionsTools, gjson.ParseBytes(chatTool).Value())
+				return true
+			}
+
+			// Built-in tools (e.g. {"type":"web_search"}, tool_search,
+			// image_generation) have no Chat Completions equivalent. Drop them so
+			// downstream providers don't reject the request on an unknown schema.
 			if toolType != "" && toolType != "function" && tool.IsObject() {
-				// Almost all providers lack built-in tools, so we just ignore them.
-				// chatCompletionsTools = append(chatCompletionsTools, tool.Value())
 				return true
 			}
 

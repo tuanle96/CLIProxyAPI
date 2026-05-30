@@ -24,13 +24,13 @@ import (
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	kiroclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/claude"
 	kirocommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/common"
 	kiroopenai "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/openai"
 	openairesponses "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -98,6 +98,55 @@ func enqueueTranslatedSSE(out chan<- cliproxyexecutor.StreamChunk, chunk []byte)
 	}
 	out <- cliproxyexecutor.StreamChunk{Payload: append(bytes.Clone(chunk), '\n', '\n')}
 }
+
+// idleTimeoutReader wraps a streaming response body and aborts the read if no
+// bytes arrive within idle. AWS CodeWhisperer occasionally holds a streaming
+// connection open without sending data or closing it; without this guard
+// io.ReadFull blocks until the OS TCP timeout (~15 min), so /v1/responses
+// clients (Codex) hang and never receive response.completed. On idle expiry we
+// close the underlying body, which unblocks the in-flight Read with an error so
+// streamToChannel can finalize the stream. The timer is reset on every Read so
+// healthy-but-slow streams (which emit reasoning/metering events periodically)
+// are never cut short. When firstToken > 0 the first byte uses that (typically
+// shorter) budget; subsequent reads use idle.
+type idleTimeoutReader struct {
+	r          io.ReadCloser
+	idle       time.Duration
+	firstToken time.Duration
+	timer      *time.Timer
+	gotFirst   bool
+}
+
+func newIdleTimeoutReader(r io.ReadCloser, idle, firstToken time.Duration) *idleTimeoutReader {
+	first := idle
+	if firstToken > 0 {
+		first = firstToken
+	}
+	return &idleTimeoutReader{
+		r:          r,
+		idle:       idle,
+		firstToken: firstToken,
+		timer: time.AfterFunc(first, func() {
+			log.Warnf("kiro: stream idle for %v, closing upstream connection", first)
+			_ = r.Close()
+		}),
+	}
+}
+
+func (x *idleTimeoutReader) Read(p []byte) (int, error) {
+	d := x.idle
+	if !x.gotFirst && x.firstToken > 0 {
+		d = x.firstToken
+	}
+	x.timer.Reset(d)
+	n, err := x.r.Read(p)
+	if n > 0 {
+		x.gotFirst = true
+	}
+	return n, err
+}
+
+func (x *idleTimeoutReader) stop() { x.timer.Stop() }
 
 // retryConfig holds configuration for socket retry logic.
 // Based on kiro2Api Python implementation patterns.
@@ -502,6 +551,26 @@ func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
 	return &KiroExecutor{cfg: cfg}
 }
 
+// streamingReadTimeout returns the idle read timeout for streaming responses,
+// preferring config (kiro-streaming-read-timeout) and falling back to the
+// kiroStreamingReadTimeout default.
+func (e *KiroExecutor) streamingReadTimeout() time.Duration {
+	if e.cfg != nil && e.cfg.KiroStreamingReadTimeout > 0 {
+		return time.Duration(e.cfg.KiroStreamingReadTimeout) * time.Second
+	}
+	return kiroStreamingReadTimeout
+}
+
+// firstTokenTimeout returns the first-byte timeout for streaming responses from
+// config (kiro-first-token-timeout). 0 disables it (falls back to the idle
+// read timeout), which is the safe default for slow "thinking" models.
+func (e *KiroExecutor) firstTokenTimeout() time.Duration {
+	if e.cfg != nil && e.cfg.KiroFirstTokenTimeout > 0 {
+		return time.Duration(e.cfg.KiroFirstTokenTimeout) * time.Second
+	}
+	return 0
+}
+
 // Identifier returns the unique identifier for this executor.
 func (e *KiroExecutor) Identifier() string { return "kiro" }
 
@@ -723,7 +792,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 		kiroPayload, _ = buildKiroPayloadForFormat(body, kiroModelID, profileArn, currentOrigin, isAgentic, isChatOnly, from, opts.Headers)
 
 		// TEMP-DEBUG-KIRO-PAYLOAD
-		log.Infof("TEMP-DEBUG-KIRO-PAYLOAD: source=%s len=%d body=%s", from.String(), len(kiroPayload), string(kiroPayload))
+		log.Debugf("kiro: payload built: source=%s len=%d body=%s", from.String(), len(kiroPayload), string(kiroPayload))
 
 		log.Debugf("kiro: trying endpoint %d/%d: %s (Name: %s, Origin: %s)",
 			endpointIdx+1, len(endpointConfigs), url, endpointConfig.Name, currentOrigin)
@@ -1445,7 +1514,12 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 				// So we always enable thinking parsing for Kiro responses
 				log.Debugf("kiro: stream thinkingEnabled = %v (always true for Kiro)", thinkingEnabled)
 
-				e.streamToChannel(ctx, resp.Body, out, from, helps.PayloadRequestedModel(opts, req.Model), opts.OriginalRequest, body, reporter, thinkingEnabled)
+				// Guard against upstream stalls: if no bytes arrive within
+				// kiroStreamingReadTimeout, close the body to unblock the read.
+				idleReader := newIdleTimeoutReader(resp.Body, e.streamingReadTimeout(), e.firstTokenTimeout())
+				defer idleReader.stop()
+
+				e.streamToChannel(ctx, idleReader, out, from, helps.PayloadRequestedModel(opts, req.Model), opts.OriginalRequest, body, reporter, thinkingEnabled)
 			}(httpResp, thinkingEnabled)
 
 			return out, nil
@@ -1768,6 +1842,14 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 
 	// Check for Opus variants
 	if strings.Contains(modelLower, "opus") {
+		if strings.Contains(modelLower, "4-8") || strings.Contains(modelLower, "4.8") {
+			log.Debugf("kiro: unknown Opus 4.8 model '%s', mapping to claude-opus-4.8", model)
+			return "claude-opus-4.8"
+		}
+		if strings.Contains(modelLower, "4-7") || strings.Contains(modelLower, "4.7") {
+			log.Debugf("kiro: unknown Opus 4.7 model '%s', mapping to claude-opus-4.7", model)
+			return "claude-opus-4.7"
+		}
 		if strings.Contains(modelLower, "4-6") || strings.Contains(modelLower, "4.6") {
 			log.Debugf("kiro: unknown Opus 4.6 model '%s', mapping to claude-opus-4.6", model)
 			return "claude-opus-4.6"
@@ -2575,7 +2657,23 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 			// Log the error
 			log.Errorf("kiro: streamToChannel error: %v", eventErr)
 
-			// Send error to channel for client notification
+			if messageStartSent {
+				// We have already begun streaming to the client (HTTP status is
+				// committed). Emitting a raw error here would leave the SSE
+				// stream without a terminal event, so /v1/responses clients
+				// (Codex) keep waiting until their own timeout. Instead, break to
+				// the normal finalization path below: it emits message_delta +
+				// message_stop, which chain.go turns into [DONE] →
+				// response.completed so the client ends cleanly.
+				if upstreamStopReason == "" {
+					upstreamStopReason = "end_turn"
+				}
+				log.Warnf("kiro: stream interrupted mid-response (%v), finalizing gracefully", eventErr)
+				break
+			}
+
+			// Error before any content was streamed: surface it so the handler
+			// can write a clean error response (status not yet committed).
 			out <- cliproxyexecutor.StreamChunk{Err: eventErr}
 			return
 		}
@@ -2947,7 +3045,11 @@ func (e *KiroExecutor) streamToChannel(ctx context.Context, body io.Reader, out 
 				}
 
 				if hasOfficialReasoningEvent {
-					processText := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(contentDelta, kirocommon.ThinkingStartTag, ""), kirocommon.ThinkingEndTag, ""))
+					// Strip any leaked thinking tags but DO NOT trim spaces: each
+					// content delta is a stream fragment, and trimming per-delta
+					// drops the boundary/inter-token spaces, gluing words together
+					// (e.g. "means verifying" -> "meansverifying"). Emit verbatim.
+					processText := strings.ReplaceAll(strings.ReplaceAll(contentDelta, kirocommon.ThinkingStartTag, ""), kirocommon.ThinkingEndTag, "")
 					if processText != "" {
 						if !isTextBlockOpen {
 							contentBlockIndex++
