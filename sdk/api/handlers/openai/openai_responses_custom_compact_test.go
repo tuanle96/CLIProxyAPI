@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -371,6 +372,62 @@ func TestCustomCompactSendsCorrectChatPayload(t *testing.T) {
 	}
 }
 
+// TestCustomCompactPolicyChecksOriginalModelBeforeInternalModel verifies that
+// caller policy is enforced on the requested model, not the operator-selected
+// custom compact model used for the internal /chat/completions call.
+func TestCustomCompactPolicyChecksOriginalModelBeforeInternalModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	llmExecutor := &customCompactLLMExecutor{provider: "openai-compatibility"}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(llmExecutor)
+
+	auth := &coreauth.Auth{ID: "custom-compact-policy", Provider: llmExecutor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{
+		{ID: "deepseek-v4-pro"},
+		{ID: "qwen-3-coder"},
+	})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	const apiKey = "test-custom-compact-deepseek-only"
+	temp := 0.2
+	cfg := &sdkconfig.SDKConfig{}
+	cfg.APIKeys = []string{apiKey}
+	cfg.APIKeyMetadata = map[string]internalconfig.APIKeyMetadata{
+		internalconfig.APIKeyID(apiKey): {
+			AllowedModels: []string{"deepseek*"},
+		},
+	}
+	cfg.CompactFallback.Enabled = false
+	cfg.CustomCompact.Enabled = true
+	cfg.CustomCompact.Model = "qwen-3-coder"
+	cfg.CustomCompact.Temperature = &temp
+	base := handlers.NewBaseAPIHandlers(cfg, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.Use(setUserAPIKeyMiddleware(apiKey))
+	router.POST("/v1/responses/compact", h.Compact)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"deepseek-v4-pro","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+	}
+	if llmExecutor.calls != 1 {
+		t.Fatalf("LLM executor calls = %d, want 1", llmExecutor.calls)
+	}
+	if llmExecutor.model != "qwen-3-coder" {
+		t.Fatalf("LLM executor model = %q, want qwen-3-coder", llmExecutor.model)
+	}
+}
+
 // TestCustomCompactDisabledByDefault verifies that when neither compact-fallback
 // nor custom-compact is configured, compact requests go through to the original
 // provider's executor unchanged.
@@ -443,6 +500,18 @@ func TestExtractConversationForCompact(t *testing.T) {
 				{"type":"function_call_output","output":"package main"}
 			]}`,
 			contains: []string{"Function call: read_file", "Function output: package main"},
+		},
+		{
+			name: "custom tool call and output",
+			input: `{"model":"m","input":[
+				{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: auth.go\n"},
+				{"type":"custom_tool_call_output","output":"Success. Updated files"}
+			]}`,
+			contains: []string{
+				"Custom tool call: apply_patch",
+				"*** Begin Patch",
+				"Custom tool output: Success. Updated files",
+			},
 		},
 		{
 			name: "with instructions and tools",

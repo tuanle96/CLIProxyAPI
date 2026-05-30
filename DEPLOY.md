@@ -422,7 +422,7 @@ compact-fallback:
 | `enabled` | Toggle. Default `false`. |
 | `model` | Codex-capable substitute model (e.g. `gpt-5.5`). Must have an active Codex auth registered. |
 | `applies-to-providers` | Provider identifiers that trigger the fallback. `["*"]` or `[]` matches every non-Codex provider. |
-| `trigger-log` | When `true`, each compact-fallback call writes a JSON log file (`logs/compact-*.json`) containing the request input and response output. The write happens in a background goroutine and never affects compact speed or correctness. Default `false`. |
+| `trigger-log` | When `true`, each compact-fallback call writes a private JSON log file (`logs/compact-*.log`, mode `0600`) containing the request input and response output. The write happens in a background goroutine and never affects compact speed or correctness. Default `false`. |
 
 **When to use:** You have Codex credentials and want compact to be handled by OpenAI's native compaction service regardless of which model the client is using.
 
@@ -431,7 +431,7 @@ compact-fallback:
 2. Proxy rewrites the model to `gpt-5.5`, strips provider-specific reasoning items
 3. Request is forwarded to the Codex executor which calls the upstream compact endpoint
 4. Response is returned to the client verbatim
-5. If `trigger-log: true`, a background goroutine writes the request input and response output to `logs/compact-<timestamp>.json`
+5. If `trigger-log: true`, a background goroutine writes the request input and response output to `logs/compact-<timestamp>.log`
 
 ### Option B: Custom Compact (LLM-based, no Codex dependency)
 
@@ -457,7 +457,7 @@ custom-compact:
 | `max-tokens` | Maximum tokens for the LLM response. Default `4096`. |
 | `temperature` | Sampling temperature. Lower = more deterministic. Default `0.2`. |
 | `max-retries` | Retry attempts when the LLM output is missing required sections. Default `1`. |
-| `trigger-log` | When `true`, each custom compact call writes a JSON log file (`logs/compact-*.json`) containing the request input and response output. The write happens in a background goroutine. Default `false`. |
+| `trigger-log` | When `true`, each custom compact call writes a private JSON log file (`logs/compact-*.log`, mode `0600`) containing the request input and response output. The write happens in a background goroutine. Default `false`. |
 
 **When to use:** You do not have Codex credentials, or you want to compact with a specific model (e.g. a local or third-party model) without depending on OpenAI's compact endpoint.
 

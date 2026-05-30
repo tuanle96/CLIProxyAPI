@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	"github.com/tidwall/gjson"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // customCompactSystemPrompt is the system prompt sent to the LLM for context
@@ -101,11 +101,11 @@ type compactionSummaryResponse struct {
 // output array. These messages carry system instructions, AGENTS.md, skills,
 // plugins, memory, and the original user request.
 type compactionOutputMessage struct {
-	ID      string                   `json:"id"`
-	Type    string                   `json:"type"`
-	Status  string                   `json:"status"`
-	Content []compactionContentPart  `json:"content"`
-	Role    string                   `json:"role"`
+	ID      string                  `json:"id"`
+	Type    string                  `json:"type"`
+	Status  string                  `json:"status"`
+	Content []compactionContentPart `json:"content"`
+	Role    string                  `json:"role"`
 }
 
 // compactionSummaryItem is the final item in the compact output array that
@@ -212,7 +212,7 @@ func buildCompactResponseJSON(summaryText string, rawJSON []byte) ([]byte, error
 // summarization. It processes:
 //   - top-level "instructions" field (system instructions the agent was given)
 //   - top-level "tools" array (tool names for context)
-//   - input array: user/assistant messages, function calls, function outputs
+//   - input array: user/assistant messages, function/custom tool calls and outputs
 //   - skips reasoning items (provider-specific signatures)
 //
 // Function call arguments and outputs are truncated at configurable limits
@@ -310,17 +310,30 @@ func extractConversationForCompact(rawJSON []byte) string {
 			continue
 		}
 
-		// Handle other item types with content
-		if itemType == "function_call" {
+		// Handle other item types with content. Codex custom tools (for
+		// example apply_patch) use custom_tool_call with a free-form input
+		// string instead of function_call.arguments.
+		if itemType == "function_call" || itemType == "custom_tool_call" {
 			name := item.Get("name").String()
 			args := item.Get("arguments").String()
-			sb.WriteString(fmt.Sprintf("Function call: %s(%s)\n\n", name, truncateText(args, defaultFunctionArgMaxLen)))
+			if args == "" {
+				args = item.Get("input").String()
+			}
+			label := "Function call"
+			if itemType == "custom_tool_call" {
+				label = "Custom tool call"
+			}
+			sb.WriteString(fmt.Sprintf("%s: %s(%s)\n\n", label, name, truncateText(args, defaultFunctionArgMaxLen)))
 			continue
 		}
 
-		if itemType == "function_call_output" {
+		if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
 			output := item.Get("output").String()
-			sb.WriteString(fmt.Sprintf("Function output: %s\n\n", truncateText(output, defaultFunctionOutputMaxLen)))
+			label := "Function output"
+			if itemType == "custom_tool_call_output" {
+				label = "Custom tool output"
+			}
+			sb.WriteString(fmt.Sprintf("%s: %s\n\n", label, truncateText(output, defaultFunctionOutputMaxLen)))
 			continue
 		}
 	}
@@ -409,12 +422,12 @@ func shouldApplyCustomCompact(h *OpenAIResponsesAPIHandler, modelName string) bo
 }
 
 // executeCustomCompact performs LLM-based context compaction:
-// 1. Extracts conversation from the compact request input (including instructions and tools)
-// 2. Builds a system + user prompt for the LLM
-// 3. Calls /chat/completions via ExecuteWithAuthManager with the configured model
-// 4. Validates the output and retries if needed
-// 5. Returns the result wrapped in the Codex response.compaction format with
-//    preserved developer/user messages and a compaction_summary item
+//  1. Extracts conversation from the compact request input (including instructions and tools)
+//  2. Builds a system + user prompt for the LLM
+//  3. Calls /chat/completions via ExecuteInternalWithAuthManager with the configured model
+//  4. Validates the output and retries if needed
+//  5. Returns the result wrapped in the Codex response.compaction format with
+//     preserved developer/user messages and a compaction_summary item
 func executeCustomCompact(h *OpenAIResponsesAPIHandler, cliCtx context.Context, modelName string, rawJSON []byte) ([]byte, error) {
 	cc := h.Cfg.CustomCompact
 	compactModel := cc.Model
@@ -454,8 +467,11 @@ func executeCustomCompact(h *OpenAIResponsesAPIHandler, cliCtx context.Context, 
 			return nil, fmt.Errorf("custom compact: marshal chat request: %w", err)
 		}
 
-		// Use the OpenAI chat handler type for the /chat/completions call
-		resp, _, errMsg := h.ExecuteWithAuthManager(
+		// Use the OpenAI chat handler type for the /chat/completions call.
+		// The Compact handler already checked the user's API-key policy against
+		// the requested model; the custom compact model is operator-owned
+		// infrastructure and should not be blocked by the caller's model allow-list.
+		resp, _, errMsg := h.ExecuteInternalWithAuthManager(
 			cliCtx,
 			"openai",
 			compactModel,
