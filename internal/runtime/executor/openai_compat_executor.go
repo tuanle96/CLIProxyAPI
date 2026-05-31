@@ -46,10 +46,18 @@ func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatE
 	return &OpenAICompatExecutor{provider: provider, cfg: cfg}
 }
 
-func openAICompatUseNativeResponsesEndpoint(provider string, opts cliproxyexecutor.Options) bool {
-	return strings.EqualFold(strings.TrimSpace(provider), "copilot") &&
-		opts.Alt != "responses/compact" &&
-		strings.EqualFold(opts.SourceFormat.String(), "openai-response")
+// copilotModelShouldUseResponses determines whether a Copilot model should be
+// routed to the /responses endpoint instead of /chat/completions.
+// Convention: gpt-* models use /responses; all other Copilot models use /chat/completions.
+func copilotModelShouldUseResponses(provider, model string) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), "copilot") {
+		return false
+	}
+	base := strings.TrimSpace(model)
+	if idx := strings.Index(base, "("); idx > 0 {
+		base = strings.TrimSpace(base[:idx])
+	}
+	return strings.HasPrefix(strings.ToLower(base), "gpt-")
 }
 
 // Identifier implements cliproxyauth.ProviderExecutor.
@@ -107,12 +115,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
-	if opts.Alt == "responses/compact" {
-		to = sdktranslator.FromString("openai-response")
-		endpoint = "/responses/compact"
-	} else if openAICompatUseNativeResponsesEndpoint(e.provider, opts) {
+	if copilotModelShouldUseResponses(e.provider, baseModel) {
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses"
+	} else if opts.Alt == "responses/compact" {
+		to = sdktranslator.FromString("openai-response")
+		endpoint = "/responses/compact"
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -311,7 +319,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
-	useNativeResponses := openAICompatUseNativeResponsesEndpoint(e.provider, opts)
+	useNativeResponses := copilotModelShouldUseResponses(e.provider, baseModel)
 	if useNativeResponses {
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses"
