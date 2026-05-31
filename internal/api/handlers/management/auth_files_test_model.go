@@ -216,5 +216,5 @@ func authFileShouldUseResponsesTest(auth *coreauth.Auth, model string) bool {
 
 func looksLikeCopilotResponsesOnlyModel(model string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(normalized, "gpt-") && strings.Contains(normalized, "-codex")
+	return strings.HasPrefix(normalized, "gpt-")
 }

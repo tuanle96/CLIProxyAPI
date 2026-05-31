@@ -83,6 +83,62 @@ func (e *CopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) 
 	return normalizeCopilotAuth(updated), nil
 }
 
+// ShouldPrepareRequestAuth returns true when the Copilot token is missing or
+// within the refresh-lead window of expiry. This triggers a pre-request token
+// exchange so the first call never fails due to a missing or stale token.
+func (e *CopilotExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	githubToken := metadataString(auth.Metadata, "github_access_token")
+	if githubToken == "" {
+		return false
+	}
+	copilotToken := metadataString(auth.Metadata, "copilot_token")
+	if copilotToken == "" {
+		return true
+	}
+	expiresAt := metadataInt64(auth.Metadata, "copilot_token_expires_at")
+	if expiresAt > 0 && time.Until(time.Unix(expiresAt, 0)) < 5*time.Minute {
+		return true
+	}
+	return false
+}
+
+// PrepareRequestAuth exchanges the GitHub token for a fresh Copilot token and
+// returns the updated auth with cached credentials for subsequent requests.
+func (e *CopilotExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if auth == nil {
+		return nil, nil
+	}
+	githubToken := metadataString(auth.Metadata, "github_access_token")
+	if githubToken == "" {
+		return auth, nil
+	}
+	authSvc := copilot.NewCopilotAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	info, err := authSvc.RefreshCopilotToken(ctx, githubToken)
+	if err != nil {
+		return auth, err
+	}
+	updated := auth.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	now := time.Now().UTC()
+	updated.Metadata["access_token"] = info.Token
+	updated.Metadata["copilot_token"] = info.Token
+	updated.Metadata["copilot_api_endpoint"] = info.APIEndpoint()
+	updated.Metadata["copilot_token_expires_at"] = info.ExpiresAt
+	updated.Metadata["copilot_token_refresh_in"] = info.RefreshIn
+	updated.Metadata["headers"] = copilotHeadersAsAny()
+	updated.Metadata["last_refresh"] = now.Format(time.RFC3339)
+	if info.ExpiresAt > 0 {
+		updated.Metadata["expired"] = time.Unix(info.ExpiresAt, 0).UTC().Format(time.RFC3339)
+	}
+	updated.LastRefreshedAt = now
+	return normalizeCopilotAuth(updated), nil
+}
+
 func normalizeCopilotAuth(auth *cliproxyauth.Auth) *cliproxyauth.Auth {
 	if auth == nil {
 		return nil
@@ -119,6 +175,21 @@ func metadataString(metadata map[string]any, key string) string {
 	}
 	value, _ := metadata[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func metadataInt64(metadata map[string]any, key string) int64 {
+	if len(metadata) == 0 {
+		return 0
+	}
+	switch v := metadata[key].(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	}
+	return 0
 }
 
 func copilotHeadersAsAny() map[string]any {
