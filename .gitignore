@@ -53,3 +53,4 @@ _bmad-output/*
 
 # mcp
 .playwright-mcp/
+.cli-proxy-api-vision-cache

@@ -146,6 +146,9 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// ProviderModels defines per-provider model configurations that can be applied to all accounts of a provider.
+	ProviderModels map[string]ProviderModelsConfig `yaml:"provider-models,omitempty" json:"provider-models,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
@@ -366,6 +369,20 @@ type OAuthModelAlias struct {
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias" json:"alias"`
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+}
+
+// ProviderModelsConfig stores provider-level model configuration for batch-applying models to all accounts of a provider.
+type ProviderModelsConfig struct {
+	UseAll bool                 `yaml:"use_all,omitempty" json:"use_all,omitempty"`
+	Models []ProviderModelEntry `yaml:"models,omitempty" json:"models,omitempty"`
+}
+
+// ProviderModelEntry represents a single model in a provider models configuration.
+type ProviderModelEntry struct {
+	ID          string `yaml:"id" json:"id"`
+	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	Type        string `yaml:"type,omitempty" json:"type,omitempty"`
+	OwnedBy     string `yaml:"owned_by,omitempty" json:"owned_by,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.

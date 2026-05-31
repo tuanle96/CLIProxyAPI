@@ -29,6 +29,7 @@ import (
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -357,6 +358,186 @@ func (h *Handler) PatchAuthFileModels(c *gin.Context) {
 		"status": "ok",
 		"manual": true,
 		"models": authFileModelResponseItems(responseModels),
+	})
+}
+
+// GetProviderModels returns provider-level model configuration and the count of auth files for the provider.
+func (h *Handler) GetProviderModels(c *gin.Context) {
+	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+
+	// Count auth files belonging to this provider.
+	count := 0
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
+				count++
+			}
+		}
+	}
+
+	// Read provider-level config.
+	useAll := false
+	var models []gin.H
+	if h.cfg.ProviderModels != nil {
+		if pm, ok := h.cfg.ProviderModels[provider]; ok {
+			useAll = pm.UseAll
+			for _, m := range pm.Models {
+				entry := gin.H{"id": m.ID}
+				if m.DisplayName != "" {
+					entry["display_name"] = m.DisplayName
+				}
+				if m.Type != "" {
+					entry["type"] = m.Type
+				}
+				if m.OwnedBy != "" {
+					entry["owned_by"] = m.OwnedBy
+				}
+				models = append(models, entry)
+			}
+		}
+	}
+	if models == nil {
+		models = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"models":  models,
+		"use_all": useAll,
+		"count":   count,
+	})
+}
+
+// PatchProviderModels saves provider-level model configuration and optionally applies models to all auth files.
+func (h *Handler) PatchProviderModels(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Provider string                   `json:"provider"`
+		UseAll   *bool                    `json:"use_all"`
+		Models   []authFileModelPatchItem `json:"models"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+
+	useAll := req.UseAll != nil && *req.UseAll
+
+	// Normalize models.
+	var configModels []config.ProviderModelEntry
+	seen := make(map[string]struct{})
+	for _, m := range req.Models {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		configModels = append(configModels, config.ProviderModelEntry{
+			ID:          id,
+			DisplayName: strings.TrimSpace(m.DisplayName),
+			Type:        strings.TrimSpace(m.Type),
+			OwnedBy:     strings.TrimSpace(m.OwnedBy),
+		})
+	}
+
+	// Save to config.
+	if h.cfg.ProviderModels == nil {
+		h.cfg.ProviderModels = make(map[string]config.ProviderModelsConfig)
+	}
+	h.cfg.ProviderModels[provider] = config.ProviderModelsConfig{
+		UseAll: useAll,
+		Models: configModels,
+	}
+
+	// If use_all is true, apply models to all auth files of this provider.
+	applyCount := 0
+	if useAll {
+		storageModels := make([]map[string]any, 0, len(configModels))
+		for _, m := range configModels {
+			entry := map[string]any{"id": m.ID}
+			if m.DisplayName != "" {
+				entry["display_name"] = m.DisplayName
+			}
+			if m.Type != "" {
+				entry["type"] = m.Type
+			}
+			if m.OwnedBy != "" {
+				entry["owned_by"] = m.OwnedBy
+			}
+			storageModels = append(storageModels, entry)
+		}
+
+		for _, auth := range h.authManager.List() {
+			if strings.ToLower(strings.TrimSpace(auth.Provider)) != provider {
+				continue
+			}
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			auth.Metadata["models"] = storageModels
+			delete(auth.Metadata, "manual_models")
+			auth.UpdatedAt = time.Now()
+			if _, err := h.authManager.Update(c.Request.Context(), auth); err != nil {
+				log.WithError(err).WithField("auth_id", auth.ID).Warn("failed to apply provider models to auth file")
+			} else {
+				applyCount++
+			}
+		}
+	}
+
+	// Build response models.
+	responseModels := make([]gin.H, 0, len(configModels))
+	for _, m := range configModels {
+		entry := gin.H{"id": m.ID}
+		if m.DisplayName != "" {
+			entry["display_name"] = m.DisplayName
+		}
+		if m.Type != "" {
+			entry["type"] = m.Type
+		}
+		if m.OwnedBy != "" {
+			entry["owned_by"] = m.OwnedBy
+		}
+		responseModels = append(responseModels, entry)
+	}
+
+	// Count auth files for the provider.
+	count := 0
+	for _, auth := range h.authManager.List() {
+		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
+			count++
+		}
+	}
+
+	// Persist config.
+	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"models":  responseModels,
+		"use_all": useAll,
+		"count":   count,
+		"applied": applyCount,
 	})
 }
 
