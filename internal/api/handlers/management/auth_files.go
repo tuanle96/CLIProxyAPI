@@ -491,6 +491,14 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 			if auth.Metadata == nil {
 				auth.Metadata = make(map[string]any)
 			}
+			// Backup current models before overwriting (only if not already backed up).
+			if _, alreadyBackedUp := auth.Metadata["provider_models_backup"]; !alreadyBackedUp {
+				if existingModels, hasModels := auth.Metadata["models"]; hasModels {
+					auth.Metadata["provider_models_backup"] = existingModels
+				} else if existingManual, hasManual := auth.Metadata["manual_models"]; hasManual {
+					auth.Metadata["provider_models_backup"] = existingManual
+				}
+			}
 			auth.Metadata["models"] = storageModels
 			delete(auth.Metadata, "manual_models")
 			auth.UpdatedAt = time.Now()
@@ -498,6 +506,28 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 				log.WithError(err).WithField("auth_id", auth.ID).Warn("failed to apply provider models to auth file")
 			} else {
 				applyCount++
+			}
+		}
+	} else {
+		// use_all is false: restore backed-up models for each auth file of this provider.
+		for _, auth := range h.authManager.List() {
+			if strings.ToLower(strings.TrimSpace(auth.Provider)) != provider {
+				continue
+			}
+			if auth.Metadata == nil {
+				continue
+			}
+			backup, hasBackup := auth.Metadata["provider_models_backup"]
+			if !hasBackup {
+				continue
+			}
+			// Restore backup to models and remove backup key.
+			auth.Metadata["models"] = backup
+			delete(auth.Metadata, "provider_models_backup")
+			delete(auth.Metadata, "manual_models")
+			auth.UpdatedAt = time.Now()
+			if _, err := h.authManager.Update(c.Request.Context(), auth); err != nil {
+				log.WithError(err).WithField("auth_id", auth.ID).Warn("failed to restore backed-up models for auth file")
 			}
 		}
 	}
