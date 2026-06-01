@@ -373,6 +373,9 @@ type OAuthModelAlias struct {
 
 // ProviderModelsConfig stores provider-level model configuration for batch-applying models to all accounts of a provider.
 type ProviderModelsConfig struct {
+	// Prefix optionally namespaces all models for this provider (e.g., "ocg" -> "ocg/glm-5.1").
+	// Max 5 characters, lowercase alphanumeric. When set, overrides per-auth-file prefix.
+	Prefix string               `yaml:"prefix" json:"prefix,omitempty"`
 	UseAll bool                 `yaml:"use_all,omitempty" json:"use_all,omitempty"`
 	Models []ProviderModelEntry `yaml:"models,omitempty" json:"models,omitempty"`
 }

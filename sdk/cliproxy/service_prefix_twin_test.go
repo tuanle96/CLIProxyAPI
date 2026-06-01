@@ -18,7 +18,7 @@ func indexByID(models []*ModelInfo) map[string]*ModelInfo {
 // the prefixed clone carries no alias marker. This is what lets model listings
 // hide the duplicate without dropping routing.
 func TestApplyModelPrefixes_MarksBareTwin(t *testing.T) {
-	out := applyModelPrefixes([]*ModelInfo{{ID: "glm-5.1", OwnedBy: "ocg"}}, "ocg", false)
+	out := applyModelPrefixes([]*ModelInfo{{ID: "glm-5.1", OwnedBy: "ocg"}}, "ocg", false, "ocg")
 
 	byID := indexByID(out)
 	bare, ok := byID["glm-5.1"]
@@ -40,7 +40,7 @@ func TestApplyModelPrefixes_MarksBareTwin(t *testing.T) {
 // With force-model-prefix enabled, the bare ID is never emitted (so there is no
 // twin to mark) unless the prefix equals the model name.
 func TestApplyModelPrefixes_ForceEmitsOnlyPrefixed(t *testing.T) {
-	out := applyModelPrefixes([]*ModelInfo{{ID: "glm-5.1", OwnedBy: "ocg"}}, "ocg", true)
+	out := applyModelPrefixes([]*ModelInfo{{ID: "glm-5.1", OwnedBy: "ocg"}}, "ocg", true, "ocg")
 
 	byID := indexByID(out)
 	if _, ok := byID["glm-5.1"]; ok {
@@ -58,7 +58,7 @@ func TestApplyModelPrefixes_ForceEmitsOnlyPrefixed(t *testing.T) {
 // An empty prefix is a no-op: models pass through untouched and unmarked.
 func TestApplyModelPrefixes_EmptyPrefixNoOp(t *testing.T) {
 	in := []*ModelInfo{{ID: "step-3.7-flash", OwnedBy: "stepfun"}}
-	out := applyModelPrefixes(in, "", false)
+	out := applyModelPrefixes(in, "", false, "")
 
 	if len(out) != 1 {
 		t.Fatalf("expected 1 model for empty prefix, got %d", len(out))

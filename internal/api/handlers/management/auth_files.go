@@ -361,6 +361,24 @@ func (h *Handler) PatchAuthFileModels(c *gin.Context) {
 	})
 }
 
+// validateProviderPrefix validates a provider-level prefix.
+// Allowed: max 5 lowercase alphanumeric characters.
+func validateProviderPrefix(prefix string) (string, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return "", nil
+	}
+	if len(prefix) > 5 {
+		return "", fmt.Errorf("prefix must be at most 5 characters")
+	}
+	for _, r := range prefix {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return "", fmt.Errorf("prefix must contain only lowercase letters and digits")
+		}
+	}
+	return prefix, nil
+}
+
 // GetProviderModels returns provider-level model configuration and the count of auth files for the provider.
 func (h *Handler) GetProviderModels(c *gin.Context) {
 	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
@@ -381,10 +399,12 @@ func (h *Handler) GetProviderModels(c *gin.Context) {
 
 	// Read provider-level config.
 	useAll := false
+	providerPrefix := ""
 	var models []gin.H
 	if h.cfg.ProviderModels != nil {
 		if pm, ok := h.cfg.ProviderModels[provider]; ok {
 			useAll = pm.UseAll
+			providerPrefix = strings.TrimSpace(pm.Prefix)
 			for _, m := range pm.Models {
 				entry := gin.H{"id": m.ID}
 				if m.DisplayName != "" {
@@ -408,6 +428,7 @@ func (h *Handler) GetProviderModels(c *gin.Context) {
 		"models":  models,
 		"use_all": useAll,
 		"count":   count,
+		"prefix":  providerPrefix,
 	})
 }
 
@@ -420,6 +441,7 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 
 	var req struct {
 		Provider string                   `json:"provider"`
+		Prefix   *string                  `json:"prefix"`
 		UseAll   *bool                    `json:"use_all"`
 		Models   []authFileModelPatchItem `json:"models"`
 	}
@@ -432,6 +454,16 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 	if provider == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
 		return
+	}
+
+	var providerPrefix string
+	if req.Prefix != nil {
+		var prefixErr error
+		providerPrefix, prefixErr = validateProviderPrefix(*req.Prefix)
+		if prefixErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": prefixErr.Error()})
+			return
+		}
 	}
 
 	useAll := req.UseAll != nil && *req.UseAll
@@ -462,6 +494,7 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 		h.cfg.ProviderModels = make(map[string]config.ProviderModelsConfig)
 	}
 	h.cfg.ProviderModels[provider] = config.ProviderModelsConfig{
+		Prefix: providerPrefix,
 		UseAll: useAll,
 		Models: configModels,
 	}
@@ -564,6 +597,7 @@ func (h *Handler) PatchProviderModels(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
+		"prefix":  providerPrefix,
 		"models":  responseModels,
 		"use_all": useAll,
 		"count":   count,
@@ -787,6 +821,16 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	// Expose note from Attributes (set by synthesizer from JSON "note" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
+	// Expose prefix from Metadata (set by PatchAuthFileFields or synthesizer).
+	if prefix := strings.TrimSpace(auth.Prefix); prefix != "" {
+		entry["prefix"] = prefix
+	} else if auth.Metadata != nil {
+		if rawPrefix, ok := auth.Metadata["prefix"].(string); ok {
+			if trimmed := strings.TrimSpace(rawPrefix); trimmed != "" {
+				entry["prefix"] = trimmed
+			}
+		}
+	}
 	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
 		entry["note"] = note
 	} else if auth.Metadata != nil {

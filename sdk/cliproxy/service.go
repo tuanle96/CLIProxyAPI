@@ -1096,9 +1096,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models := applyExcludedModels(manualModels, excluded)
 		models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
 		if key := provider; key != "" {
-			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+			s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, s.resolveEffectivePrefix(a.Prefix, a.Provider), s.cfg != nil && s.cfg.ForceModelPrefix, key))
 		} else {
-			s.registerResolvedModelsForAuth(a, strings.ToLower(strings.TrimSpace(a.Provider)), applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+			s.registerResolvedModelsForAuth(a, strings.ToLower(strings.TrimSpace(a.Provider)), applyModelPrefixes(models, s.resolveEffectivePrefix(a.Prefix, a.Provider), s.cfg != nil && s.cfg.ForceModelPrefix, strings.ToLower(strings.TrimSpace(a.Provider))))
 		}
 		return
 	}
@@ -1246,7 +1246,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 						if providerKey == "" {
 							providerKey = "openai-compatibility"
 						}
-						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, s.resolveEffectivePrefix(a.Prefix, a.Provider), s.cfg.ForceModelPrefix, providerKey))
 					} else {
 						// Ensure stale registrations are cleared when model list becomes empty.
 						GlobalModelRegistry().UnregisterClient(a.ID)
@@ -1267,7 +1267,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		if key == "" {
 			key = strings.ToLower(strings.TrimSpace(a.Provider))
 		}
-		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, s.resolveEffectivePrefix(a.Prefix, a.Provider), s.cfg != nil && s.cfg.ForceModelPrefix, key))
 		return
 	}
 
@@ -1496,7 +1496,26 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 	return filtered
 }
 
-func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
+// resolveEffectivePrefix returns the provider-level prefix from config when the
+// auth file has no per-file prefix configured. Provider prefix takes precedence.
+func (s *Service) resolveEffectivePrefix(authPrefix, provider string) string {
+	if authPrefix != "" {
+		return authPrefix
+	}
+	if s.cfg == nil {
+		return ""
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return ""
+	}
+	if pm, ok := s.cfg.ProviderModels[provider]; ok {
+		return strings.TrimSpace(pm.Prefix)
+	}
+	return ""
+}
+
+func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool, provider string) []*ModelInfo {
 	trimmedPrefix := strings.TrimSpace(prefix)
 	if trimmedPrefix == "" || len(models) == 0 {
 		return models
@@ -1546,6 +1565,9 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		clone := *model
 		clone.ID = prefixedID
 		clone.AutoPrefixAliasFor = ""
+		if trimmedProvider := strings.TrimSpace(provider); trimmedProvider != "" {
+			clone.OwnedBy = trimmedProvider
+		}
 		addModel(&clone)
 	}
 	return out

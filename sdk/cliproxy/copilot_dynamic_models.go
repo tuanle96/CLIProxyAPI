@@ -35,7 +35,6 @@ var copilotModelProbeSlots = make(chan struct{}, 8)
 // copilotLastProbe tracks the last probe time per auth ID for TTL throttling.
 var copilotLastProbe sync.Map
 
-
 // refreshCopilotDynamicModels schedules an asynchronous fetch of the live
 // Copilot model list for the given auth and re-registers only models that pass
 // a live endpoint-specific probe. Copilot /models can over-report account access,
@@ -99,6 +98,11 @@ func (s *Service) refreshCopilotDynamicModels(a *coreauth.Auth, excluded []strin
 		merged = applyExcludedModels(merged, excludedCopy)
 		verified := verifyCopilotCallableModels(authSvc, authID, endpoint, token, merged)
 
+		// Apply provider prefix to models before registration.
+		effectivePrefix := s.resolveEffectivePrefix("", provider)
+		if effectivePrefix != "" {
+			verified = applyModelPrefixes(verified, effectivePrefix, s.cfg != nil && s.cfg.ForceModelPrefix, provider)
+		}
 		GlobalModelRegistry().RegisterClient(authID, provider, verified)
 		if s.coreManager != nil {
 			s.coreManager.ReconcileRegistryModelStates(context.Background(), authID)
